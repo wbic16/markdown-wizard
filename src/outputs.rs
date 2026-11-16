@@ -176,7 +176,7 @@ fn build_tree(staging: &Path, bundle: &Bundle) -> Result<(), String> {
     write_file(&staging.join("favicon.svg"), FAVICON_SVG.as_bytes())?;
     write_file(&staging.join("favicon.png"), FAVICON_PNG)?;
     write_file(&staging.join("mascot-badge.webp"), MASCOT_BADGE)?;
-    write_file(&staging.join("bundle.zip"), &bundle.parsed.zip_bytes)?;
+    write_file(&staging.join("bundle.zip"), &bundle.parsed.public_zip_bytes)?;
     write_file(
         &staging.join("feed.xml"),
         rss::feed_xml(bundle, CANONICAL_BASE).as_bytes(),
@@ -220,12 +220,23 @@ fn build_tree(staging: &Path, bundle: &Bundle) -> Result<(), String> {
                 "<script>document.documentElement.setAttribute(\"data-theme\",\"light\")</script></head>",
                 1,
             );
+            // The print copy is the one page this server ever hands
+            // to a browser of its own: an author's image pointing at
+            // a loopback service, a cloud metadata address, or a
+            // file on this host would otherwise be fetched (or read)
+            // at print time and land inside the PDF. Print only what
+            // the bundle itself carries; the live page keeps the
+            // author's own links, fetched by the reader's browser.
+            let print_html = print_safe(&print_html, &parent_dir(&stem));
             fs::create_dir_all(&pdf_work).map_err(|e| format!("cannot stage pdf work: {e}"))?;
             // The print input sits beside the page's own tree
-            // address (under a throwaway name, removed right after
-            // printing), so the page's relative images resolve
-            // against the tree exactly as a reader's would.
-            let input = staging.join(format!("{stem}.pdfprint.html"));
+            // address (under a throwaway nonce name, removed right
+            // after printing), so the page's relative images resolve
+            // against the tree exactly as a reader's would — and a
+            // carried file can never sit at the input's address.
+            static PRINT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let seq = PRINT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let input = staging.join(format!("{stem}.pdfprint-{}-{seq}.html", std::process::id()));
             let out = staging.join(&pdf_rel);
             if let Some(parent) = input.parent() {
                 fs::create_dir_all(parent).map_err(|e| format!("cannot stage pdf input: {e}"))?;
@@ -296,7 +307,8 @@ fn readme_text(bundle: &Bundle) -> String {
          \x20 <name>.md     the markdown source itself, at its own path\n\
          \x20 feed.xml      the bundle's RSS feed (its items point at the live\n\
          \x20               bundle on md.phext.io, where the feed is canonical)\n\
-         \x20 bundle.zip    the bundle exactly as published — the source archive\n\
+         \x20 bundle.zip    the bundle as published, its vault left out — the\n\
+         \x20               source archive\n\
          \x20 mascot-badge.webp, favicon.png, favicon.svg\n\
          \x20               the furniture the pages reference, carried along so\n\
          \x20               nothing on a page points back at the living site\n\n\
@@ -640,5 +652,218 @@ fn wait_timeout(child: &mut Child, timeout: Duration) -> Option<std::process::Ex
             }
             Err(_) => return None,
         }
+    }
+}
+
+/// The print copy's image rule: an `<img>` keeps its source only
+/// when the source stays inside the bundle's own tree — a relative
+/// path that resolves within the tree from the page's directory, or
+/// an inline `data:image/` the author supplied. Anything else —
+/// an absolute path, a `file:` or `http(s):` address, a
+/// protocol-relative host, or a relative path that climbs out of
+/// the tree — is blanked, so printing can neither fetch a URL nor
+/// read a file the bundle did not carry. The live reading view is
+/// untouched: a reader's browser fetching the author's own image
+/// is ordinary web behavior; this server's printer doing so is not.
+fn print_safe(html: &str, base_dir: &str) -> String {
+    let bytes = html.as_bytes();
+    let mut out = String::with_capacity(html.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // Find the next `<img` tag start (case-insensitive, with a
+        // tag-name boundary after it).
+        if bytes[i] == b'<'
+            && i + 4 <= bytes.len()
+            && bytes[i + 1..i + 4].eq_ignore_ascii_case(b"img")
+            && (i + 4 == bytes.len()
+                || bytes[i + 4].is_ascii_whitespace()
+                || bytes[i + 4] == b'/'
+                || bytes[i + 4] == b'>')
+        {
+            let tag_end = html[i..]
+                .find('>')
+                .map(|j| i + j + 1)
+                .unwrap_or(bytes.len());
+            out.push_str(&print_safe_tag(&html[i..tag_end], base_dir));
+            i = tag_end;
+        } else {
+            // Copy one UTF-8 character verbatim.
+            let ch_len = utf8_len(bytes[i]);
+            out.push_str(&html[i..(i + ch_len).min(bytes.len())]);
+            i += ch_len;
+        }
+    }
+    out
+}
+
+fn utf8_len(first: u8) -> usize {
+    if first < 0x80 {
+        1
+    } else if first >> 5 == 0b110 {
+        2
+    } else if first >> 4 == 0b1110 {
+        3
+    } else {
+        4
+    }
+}
+
+/// One `<img …>` tag, its `src` blanked when the print rule refuses
+/// it. Everything else in the tag is carried through untouched.
+fn print_safe_tag(tag: &str, base_dir: &str) -> String {
+    let bytes = tag.as_bytes();
+    // Locate `src` as an attribute name (preceded by whitespace).
+    let mut i = 0;
+    while i + 3 < bytes.len() {
+        if (bytes[i].is_ascii_whitespace())
+            && bytes[i + 1..i + 4].eq_ignore_ascii_case(b"src")
+        {
+            let mut j = i + 4;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'=' {
+                j += 1;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j >= bytes.len() {
+                    return tag.to_string();
+                }
+                // The value: quoted, or bare up to whitespace / '>'.
+                let (vstart, vend, quoted) = if bytes[j] == b'"' || bytes[j] == b'\'' {
+                    let q = bytes[j];
+                    let start = j + 1;
+                    let mut end = start;
+                    while end < bytes.len() && bytes[end] != q {
+                        end += 1;
+                    }
+                    (start, end, true)
+                } else {
+                    let start = j;
+                    let mut end = start;
+                    while end < bytes.len()
+                        && !bytes[end].is_ascii_whitespace()
+                        && bytes[end] != b'>'
+                    {
+                        end += 1;
+                    }
+                    (start, end, false)
+                };
+                let value = &tag[vstart..vend];
+                if print_src_allowed(value, base_dir) {
+                    return tag.to_string();
+                }
+                // Blank the value, keeping the quotes if it had any.
+                let mut out = String::with_capacity(tag.len());
+                out.push_str(&tag[..vstart]);
+                out.push_str(&tag[vend..]);
+                let _ = quoted;
+                return out;
+            }
+            return tag.to_string();
+        }
+        i += 1;
+    }
+    tag.to_string()
+}
+
+/// May the print copy load this image source? See print_safe.
+fn print_src_allowed(src: &str, base_dir: &str) -> bool {
+    if src.is_empty() {
+        return true;
+    }
+    let lower = src.to_ascii_lowercase();
+    if lower.starts_with("data:image/") {
+        return true; // the author's own inline bytes
+    }
+    if src.starts_with('/') {
+        return false; // host-absolute path, or protocol-relative //
+    }
+    // Any scheme at all (http:, file:, data:text/html, …) is out.
+    if let Some(colon) = src.find(':') {
+        let before = &src[..colon];
+        if !before.is_empty()
+            && before
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+            && !before.contains('/')
+        {
+            return false;
+        }
+    }
+    // Relative: resolve against the page's directory inside the
+    // tree; refuse if the path climbs above the tree's root.
+    let mut depth: i32 = if base_dir.is_empty() {
+        0
+    } else {
+        base_dir.split('/').filter(|s| !s.is_empty()).count() as i32
+    };
+    for seg in src.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => depth += 1,
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod print_safe_tests {
+    use super::print_safe;
+
+    #[test]
+    fn print_copy_keeps_only_tree_images() {
+        // Bundle-relative images ride along.
+        assert_eq!(
+            print_safe("<p><img src=\"pic.png\" alt=\"a\"></p>", ""),
+            "<p><img src=\"pic.png\" alt=\"a\"></p>"
+        );
+        assert_eq!(
+            print_safe("<img src=\"../assets/pic.png\">", "essays"),
+            "<img src=\"../assets/pic.png\">"
+        );
+        // The author's own inline image is their bytes, kept.
+        assert!(print_safe("<img src=\"data:image/png;base64,AAAA\">", "")
+            .contains("data:image/png"));
+        // Absolute paths, file: and http(s): sources are blanked —
+        // printing must not read the host or fetch the network.
+        assert_eq!(print_safe("<img src=\"/tmp/secret.png\">", ""), "<img src=\"\">");
+        assert_eq!(
+            print_safe("<img src=\"file:///etc/passwd\">", ""),
+            "<img src=\"\">"
+        );
+        assert_eq!(
+            print_safe("<img src=\"http://127.0.0.1:18233/x.png\">", ""),
+            "<img src=\"\">"
+        );
+        assert_eq!(
+            print_safe("<img src=\"https://example.com/x.png\">", ""),
+            "<img src=\"\">"
+        );
+        assert_eq!(
+            print_safe("<img src=\"//evil.example/x.png\">", ""),
+            "<img src=\"\">"
+        );
+        // A relative path that climbs out of the tree is blanked.
+        assert_eq!(
+            print_safe("<img src=\"../../secret.png\">", "essays"),
+            "<img src=\"\">"
+        );
+        assert_eq!(
+            print_safe("<img src=\"../secret.png\">", ""),
+            "<img src=\"\">"
+        );
+        // Non-image markup is untouched.
+        assert_eq!(
+            print_safe("<a href=\"https://example.com/\">x</a>", ""),
+            "<a href=\"https://example.com/\">x</a>"
+        );
     }
 }

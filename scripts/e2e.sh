@@ -139,7 +139,15 @@ print("feeds validate: XML parses, source:markdown byte-exact, content full, GUI
 PYEOF
 note "feeds parse as XML: full content, byte-exact source:markdown, path GUIDs, site-wide merge"
 curl -sf "$BASE/b/e2e-bundle.zip" > "$WORK/dl.zip"
-cmp "$WORK/bundle-v1.zip" "$WORK/dl.zip" || fail "downloaded bundle differs from the published zip"
+python3 - "$WORK/bundle-v1.zip" "$WORK/dl.zip" <<'PYEOF' || fail "the public download is not the published bundle with its vault left out"
+import sys, zipfile
+src = zipfile.ZipFile(sys.argv[1])
+dl = zipfile.ZipFile(sys.argv[2])
+expected = {n: src.read(n) for n in src.namelist() if not n.startswith("vault/") and not n.endswith("/")}
+got = {n: dl.read(n) for n in dl.namelist() if not n.endswith("/")}
+assert got == expected, f"public zip differs: {sorted(got)} vs {sorted(expected)}"
+assert not any(n.startswith("vault/") for n in got), "the vault is in the public download"
+PYEOF
 note "index, reading view, feed, vault privacy, download: all as designed"
 
 # ——— the keeper's assets ———
@@ -155,7 +163,8 @@ assert d[:4] == b'\x89PNG', 'favicon is not a PNG'
 "
 grep -q "mascot-badge" "$WORK/index.html" || fail "bundle index lacks the keeper"
 grep -q "mascot-badge" "$WORK/view.html" && fail "a reading page carries the keeper"
-curl -sf "$BASE/" | grep -q "mascot-badge" || fail "editor brand lacks the keeper"
+curl -sf "$BASE/" > "$WORK/editor-brand.html"
+grep -q "mascot-badge" "$WORK/editor-brand.html" || fail "editor brand lacks the keeper"
 note "the keeper: badge and favicon serve; index and editor wear it; reading pages stay clean"
 # ——— the derived outputs: pre-rendered page, PDF, static site ———
 curl -sf "$BASE/b/e2e-bundle/essays/one.html" > "$WORK/one-static.html"
@@ -189,7 +198,12 @@ for expected in ["index.html", "about.html", "essays/one.html", "index.md",
                  "README.txt", "favicon.svg", "favicon.png", "mascot-badge.webp"]:
     assert expected in names, f"site.zip lacks {expected}: {sorted(names)}"
 assert not any(n.startswith("vault/") for n in names), f"vault in the site: {sorted(names)}"
-assert z.read("bundle.zip") == open(sys.argv[2], "rb").read(), "bundle.zip inside differs"
+import io
+src = zipfile.ZipFile(sys.argv[2])
+inner = zipfile.ZipFile(io.BytesIO(z.read("bundle.zip")))
+expected = {n: src.read(n) for n in src.namelist() if not n.startswith("vault/") and not n.endswith("/")}
+got = {n: inner.read(n) for n in inner.namelist() if not n.endswith("/")}
+assert got == expected, "bundle.zip inside is not the published bundle with its vault left out"
 import re
 def check_links(page):
     html = z.read(page).decode("utf-8")
@@ -210,23 +224,28 @@ note "static site: full tree, source zip inside, every internal link resolves in
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/publish" -H "X-Slug: e2e-bundle" \
   -H "X-Edit-Key: not-the-key" --data-binary @"$WORK/bundle-v2.zip")
 [ "$CODE" = "403" ] || fail "wrong key answered $CODE, not 403"
-curl -sf "$BASE/b/e2e-bundle/essays/one.md" | grep -q "First version." || fail "a refused publish changed the bundle"
+curl -sf "$BASE/b/e2e-bundle/essays/one.md" > "$WORK/one-after-refusal.md"
+grep -q "First version." "$WORK/one-after-refusal.md" || fail "a refused publish changed the bundle"
 RESP2=$(curl -sf -X POST "$BASE/api/publish" -H "X-Slug: e2e-bundle" -H "X-Edit-Key: $KEY" \
   -H "X-Changed: Second release" --data-binary @"$WORK/bundle-v2.zip")
 V2=$(printf '%s' "$RESP2" | python3 -c "import json,sys; print(json.load(sys.stdin)['version'])")
 URL2=$(printf '%s' "$RESP2" | python3 -c "import json,sys; print(json.load(sys.stdin)['url'])")
 [ "$V2" = "2" ] || fail "re-publish version is $V2, not 2"
 [ "$URL2" = "/b/e2e-bundle/" ] || fail "re-publish moved the URL: $URL2"
-curl -sf "$BASE/b/e2e-bundle/essays/one.md" | grep -q "Second version." || fail "re-publish did not swap the content"
-curl -sf "$BASE/b/e2e-bundle/essays/one.html" | grep -q "Second version." || fail "re-publish did not rebuild the pre-rendered page"
-curl -sf "$BASE/b/e2e-bundle/essays/one.html" | grep -q "Version 2 · (Your Version)" || fail "the rebuilt page lacks the new version line"
+curl -sf "$BASE/b/e2e-bundle/essays/one.md" > "$WORK/one-v2.md"
+grep -q "Second version." "$WORK/one-v2.md" || fail "re-publish did not swap the content"
+curl -sf "$BASE/b/e2e-bundle/essays/one.html" > "$WORK/one-v2.html"
+grep -q "Second version." "$WORK/one-v2.html" || fail "re-publish did not rebuild the pre-rendered page"
+grep -q "Version 2 · (Your Version)" "$WORK/one-v2.html" || fail "the rebuilt page lacks the new version line"
 note "wrong key refused; re-publish swapped the bundle at the same URL, version 2"
 
 # ——— restore, both ways ———
 curl -sf -X POST "$BASE/api/restore" -H "X-Slug: e2e-bundle" -H "X-Edit-Key: $KEY" > /dev/null
-curl -sf "$BASE/b/e2e-bundle/essays/one.md" | grep -q "First version." || fail "restore did not bring v1 back"
+curl -sf "$BASE/b/e2e-bundle/essays/one.md" > "$WORK/one-restored.md"
+grep -q "First version." "$WORK/one-restored.md" || fail "restore did not bring v1 back"
 curl -sf -X POST "$BASE/api/restore" -H "X-Slug: e2e-bundle" -H "X-Edit-Key: $KEY" > /dev/null
-curl -sf "$BASE/b/e2e-bundle/essays/one.md" | grep -q "Second version." || fail "second restore did not return to v2"
+curl -sf "$BASE/b/e2e-bundle/essays/one.md" > "$WORK/one-restored2.md"
+grep -q "Second version." "$WORK/one-restored2.md" || fail "second restore did not return to v2"
 note "restore swaps the two versions cleanly"
 
 # ——— the ways-to-use-it page ———
@@ -329,7 +348,8 @@ echo "$PUB" | grep -qF '\"version\": 1' || fail "the MCP publish did not land at
 printf '# Deep Note\n\nThe agent was here.\n' > "$WORK/agent-deep.md"
 curl -sf "$BASE/b/agent-bundle/notes/deep.md" -o "$WORK/agent-deep-got.md" || fail "the agent's file is not public"
 cmp "$WORK/agent-deep.md" "$WORK/agent-deep-got.md" || fail "the public bytes differ from the agent's write"
-curl -sf "$BASE/b/agent-bundle/notes/deep" | grep -q 'The agent was here.' || fail "the reading view lacks the agent's words"
+curl -sf "$BASE/b/agent-bundle/notes/deep" > "$WORK/agent-deep.html"
+grep -q 'The agent was here.' "$WORK/agent-deep.html" || fail "the reading view lacks the agent's words"
 
 # ——— federation surface: the door is visible signed out ———
 # The full OAuth + vault flow runs against a local stub of

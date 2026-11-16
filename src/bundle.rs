@@ -46,6 +46,15 @@ impl BundleFile {
 /// for zips: a bundle is stored iff every entry parses within caps.
 pub struct ParsedBundle {
     pub zip_bytes: Vec<u8>,
+    /// The archive as the public may take it away: the same entries
+    /// minus the vault. When the bundle carries no vault files this
+    /// is `zip_bytes` itself, byte for byte; otherwise a fresh stored
+    /// zip of the public files only. The store keeps the committed
+    /// archive whole (restore and working copies need the vault);
+    /// the public zip download and the static site's inner
+    /// bundle.zip serve this one — the vault is never published,
+    /// in any form.
+    pub public_zip_bytes: Vec<u8>,
     pub files: Vec<BundleFile>,
 }
 
@@ -173,7 +182,21 @@ fn parse_entries(zip_bytes: Vec<u8>, require_markdown: bool) -> Result<ParsedBun
         return Err("bundle holds no markdown (.md) files".to_string());
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(ParsedBundle { zip_bytes, files })
+    let public_zip_bytes = if files.iter().any(|f| is_vault_path(&f.path)) {
+        let public: Vec<BundleFile> = files
+            .iter()
+            .filter(|f| !is_vault_path(&f.path))
+            .cloned()
+            .collect();
+        build_zip(&public)?
+    } else {
+        zip_bytes.clone()
+    };
+    Ok(ParsedBundle {
+        zip_bytes,
+        public_zip_bytes,
+        files,
+    })
 }
 
 /// Serialize files back into a bundle archive — the inverse of
@@ -371,6 +394,38 @@ mod tests {
         assert!(!valid_bundle_path("a\\b.md"));
         assert!(!valid_bundle_path("./x.md"));
         assert!(!valid_bundle_path(""));
+    }
+
+    #[test]
+    fn public_zip_never_carries_the_vault() {
+        let with_vault = build_zip(&[
+            BundleFile {
+                path: "index.md".into(),
+                bytes: b"# Hi\n".to_vec(),
+                is_markdown: true,
+            },
+            BundleFile {
+                path: "vault/secret.md".into(),
+                bytes: b"# Hidden\n".to_vec(),
+                is_markdown: true,
+            },
+        ])
+        .unwrap();
+        let parsed = parse_bundle(with_vault.clone()).unwrap();
+        assert_ne!(parsed.public_zip_bytes, with_vault);
+        let public = parse_bundle(parsed.public_zip_bytes.clone()).unwrap();
+        assert!(public.file("index.md").is_some());
+        assert!(public.file("vault/secret.md").is_none());
+        // No vault anywhere in the archive → the public zip IS the
+        // published zip, byte for byte.
+        let plain = build_zip(&[BundleFile {
+            path: "index.md".into(),
+            bytes: b"# Hi\n".to_vec(),
+            is_markdown: true,
+        }])
+        .unwrap();
+        let parsed = parse_bundle(plain.clone()).unwrap();
+        assert_eq!(parsed.public_zip_bytes, plain);
     }
 
     #[test]

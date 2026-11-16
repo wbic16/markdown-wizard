@@ -292,10 +292,13 @@ fn handle(
             let slug = &p["/api/bundles/".len()..];
             match store.get(slug) {
                 Some(bundle) => {
+                    // The public listing names public files only:
+                    // the vault is never listed, here as everywhere.
                     let files: Vec<String> = bundle
                         .parsed
                         .files
                         .iter()
+                        .filter(|f| !bundle::is_vault_path(&f.path))
                         .map(|f| format!("\"{}\"", http::json_escape(&f.path)))
                         .collect();
                     let changed = bundle
@@ -374,6 +377,9 @@ fn handle_publish(
             json_error(stream, headers, 403, "that edit key does not open this slug")
         }
         Err(PublishError::NoPrevious) => json_error(stream, headers, 409, "no previous version"),
+        Err(PublishError::Stale { .. }) => {
+            json_error(stream, headers, 409, "the bundle changed under this publish; try again")
+        }
         Err(PublishError::Io(msg)) => {
             eprintln!("markdown-wizard: publish {slug} failed: {msg}");
             json_error(stream, headers, 500, "the publish could not be stored")
@@ -402,6 +408,9 @@ fn handle_restore(
         }
         Err(PublishError::WrongKey) => json_error(stream, headers, 403, "that edit key does not open this slug"),
         Err(PublishError::NoPrevious) => json_error(stream, headers, 409, "no previous version to restore"),
+        Err(PublishError::Stale { .. }) => {
+            json_error(stream, headers, 409, "the bundle changed under this restore; try again")
+        }
         Err(PublishError::Invalid(msg)) => json_error(stream, headers, 422, &msg),
         Err(PublishError::Io(msg)) => {
             eprintln!("markdown-wizard: restore {slug} failed: {msg}");
@@ -810,7 +819,7 @@ fn handle_bundle_path(
                 stream,
                 200,
                 "application/zip",
-                &bundle.parsed.zip_bytes,
+                &bundle.parsed.public_zip_bytes,
                 CacheClass::Shell,
                 headers,
                 head_only,

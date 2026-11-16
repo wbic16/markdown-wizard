@@ -164,6 +164,44 @@ fn crc32(bytes: &[u8]) -> u32 {
     c ^ 0xffffffff
 }
 
+/// The public form of a published zip: every entry except the
+/// vault, contents byte for byte. The bundle download and the
+/// site's inner bundle.zip must equal this — never the published
+/// zip itself when the bundle carries a vault (the vault is never
+/// published, in any form).
+fn assert_public_zip(public: &[u8], published: &[u8]) {
+    use std::io::Read as _;
+    let mut pub_archive =
+        zip::ZipArchive::new(std::io::Cursor::new(public.to_vec())).unwrap();
+    let mut pub_names: Vec<String> =
+        pub_archive.file_names().map(|n| n.to_string()).collect();
+    pub_names.sort();
+    let mut src_archive =
+        zip::ZipArchive::new(std::io::Cursor::new(published.to_vec())).unwrap();
+    let mut expected: Vec<String> = src_archive
+        .file_names()
+        .filter(|n| !n.starts_with("vault/"))
+        .map(|n| n.to_string())
+        .collect();
+    expected.sort();
+    assert_eq!(pub_names, expected, "public zip entries differ");
+    for name in &expected {
+        let mut a = Vec::new();
+        pub_archive
+            .by_name(name)
+            .unwrap()
+            .read_to_end(&mut a)
+            .unwrap();
+        let mut b = Vec::new();
+        src_archive
+            .by_name(name)
+            .unwrap()
+            .read_to_end(&mut b)
+            .unwrap();
+        assert_eq!(a, b, "public zip entry {name} differs");
+    }
+}
+
 fn publish(port: u16, slug: &str, zip: &[u8], key: Option<&str>, changed: Option<&str>) -> Response {
     let mut headers = vec![("X-Slug", slug.to_string())];
     if let Some(k) = key {
@@ -242,6 +280,11 @@ fn publish_serve_republish_restore_cycle() {
     assert!(index_text.contains("/mascot-badge.webp"), "{index_text}");
 
     // The vault is never served, listed, or fed.
+    let listing = get(srv.port, "/api/bundles/test-bundle");
+    assert_eq!(listing.status, 200);
+    let listing_text = String::from_utf8_lossy(&listing.body).into_owned();
+    assert!(!listing_text.contains("vault"), "the bundle listing names the vault: {listing_text}");
+    assert!(listing_text.contains("essays/one.md"), "{listing_text}");
     assert_eq!(get(srv.port, "/b/test-bundle/vault/secret.md").status, 404);
     assert_eq!(get(srv.port, "/b/test-bundle/vault/secret").status, 404);
     assert!(!index_text.contains("secret"), "{index_text}");
@@ -252,10 +295,11 @@ fn publish_serve_republish_restore_cycle() {
     assert!(feed_text.contains("/b/test-bundle/essays/one"), "{feed_text}");
     assert!(!feed_text.contains("secret"), "{feed_text}");
 
-    // The bundle downloads as the exact zip that was published.
+    // The bundle downloads as its public zip: the published
+    // entries with the vault left out.
     let dl = get(srv.port, "/b/test-bundle.zip");
     assert_eq!(dl.status, 200);
-    assert_eq!(dl.body, zip1);
+    assert_public_zip(&dl.body, &zip1);
 
     // A wrong key is refused, and nothing changes.
     let zip2 = make_zip(&[
@@ -360,6 +404,41 @@ fn article_of(html: &str) -> String {
     html[start..end].to_string()
 }
 
+/// Racing first publishes of one fresh slug: exactly one is
+/// Created and mints the key that opens the slug; the rest are
+/// refused. (Before the store's per-slug commit lock, every racer
+/// passed the "unpublished" check, every one answered 201 with a
+/// distinct key, and all but one key opened nothing.)
+#[test]
+fn racing_first_publishes_mint_one_key() {
+    let srv = start_server();
+    let port = srv.port;
+    let zip = make_zip(&[("index.md", INDEX_V1)]);
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let zip = zip.clone();
+        handles.push(std::thread::spawn(move || {
+            publish(port, "race-bundle", &zip, None, None)
+        }));
+    }
+    let mut keys = Vec::new();
+    let mut refused = 0;
+    for h in handles {
+        let r = h.join().unwrap();
+        if r.status == 201 {
+            keys.push(json_str(&r.body, "edit_key").expect("a creation returns its key"));
+        } else {
+            assert_eq!(r.status, 403, "a racing loser answered {}", r.status);
+            refused += 1;
+        }
+    }
+    assert_eq!(keys.len(), 1, "exactly one racer creates the slug");
+    assert_eq!(refused, 7);
+    let zip2 = make_zip(&[("index.md", "# Again\n")]);
+    let r = publish(srv.port, "race-bundle", &zip2, Some(&keys[0]), None);
+    assert_eq!(r.status, 200, "the one minted key opens the slug");
+}
+
 /// The derived outputs come with the publish: a pre-rendered page
 /// and a PDF at each file's `.html` / `.pdf` address, and the whole
 /// bundle as a deployable static site at `site.zip` — all rebuilt
@@ -441,13 +520,14 @@ fn outputs_come_with_the_publish() {
         !names.iter().any(|n| n.starts_with("vault/")),
         "the vault is in the site download: {names:?}"
     );
-    // The source archive rides inside, byte for byte.
+    // The source archive rides inside — the public zip, the
+    // published entries with the vault left out.
     let mut inner = String::new();
     {
         let mut entry = archive.by_name("bundle.zip").unwrap();
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
-        assert_eq!(bytes, zip1, "bundle.zip inside the site is the published zip");
+        assert_public_zip(&bytes, &zip1);
     }
     // The exported index links resolve inside the tree: relative,
     // and at the tree's own addresses.

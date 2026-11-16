@@ -52,7 +52,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::bundle::{constant_time_eq, new_edit_key, parse_bundle, sha256_hex, ParsedBundle};
@@ -104,6 +104,14 @@ impl Bundle {
 pub struct Store {
     dir: PathBuf,
     bundles: RwLock<HashMap<String, Arc<Bundle>>>,
+    /// One commit lock per slug. A publish is check-then-commit —
+    /// does the slug exist, is the key right, has the version
+    /// moved — and the check and the commit must be one indivisible
+    /// step per slug, or two racing first-publishes both pass the
+    /// "does not exist yet" check and both mint keys, one silently
+    /// overwriting the other. The lock is per slug so a slow commit
+    /// (output generation included) never stalls another bundle.
+    slug_locks: RwLock<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 pub enum PublishOutcome {
@@ -121,6 +129,9 @@ pub enum PublishError {
     WrongKey,
     /// Restore was asked for but no previous version exists.
     NoPrevious,
+    /// A version-checked publish found the bundle had moved past
+    /// the version the caller based its work on.
+    Stale { base: u64, current: u64 },
     /// Filesystem failure (message is for the log and the user).
     Io(String),
 }
@@ -185,6 +196,7 @@ impl Store {
         let store = Store {
             dir,
             bundles: RwLock::new(map),
+            slug_locks: RwLock::new(HashMap::new()),
         };
         // Derived outputs are a cache of the committed state: any
         // bundle whose outputs are missing or visibly incomplete
@@ -224,11 +236,35 @@ impl Store {
         self.dir.join(slug).join("prev").join("bundle.zip").is_file()
     }
 
+    /// The slug's commit lock (see the field's note): created on
+    /// first use, held across the check-and-commit of every publish
+    /// and restore of that slug.
+    fn slug_lock(&self, slug: &str) -> Arc<Mutex<()>> {
+        self.slug_locks
+            .write()
+            .unwrap()
+            .entry(slug.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
     /// Publish a bundle. `supplied_key` is required iff the slug
     /// already exists. The whole operation is: verify in memory,
     /// check the key, preserve the current as previous, stage + sync
     /// + rename + sync, swap the Arc.
     pub fn publish(
+        &self,
+        slug: &str,
+        zip_bytes: Vec<u8>,
+        supplied_key: Option<&str>,
+        changed: Option<String>,
+    ) -> Result<PublishOutcome, PublishError> {
+        let lock = self.slug_lock(slug);
+        let _guard = lock.lock().unwrap();
+        self.publish_locked(slug, zip_bytes, supplied_key, changed)
+    }
+
+    fn publish_locked(
         &self,
         slug: &str,
         zip_bytes: Vec<u8>,
@@ -303,7 +339,7 @@ impl Store {
     /// Only valid while the slug is unpublished; the web path
     /// (`publish`) mints its own key and is unchanged. Everything
     /// else — the in-memory gate, the commit sequence — is shared.
-    pub fn publish_with_issued_key(
+    fn publish_with_issued_key(
         &self,
         slug: &str,
         zip_bytes: Vec<u8>,
@@ -343,12 +379,54 @@ impl Store {
         Ok(bundle)
     }
 
+    /// Publish a working copy's archive, checked against the
+    /// version the draft was based on — the check and the commit
+    /// under the slug's one lock, so a web publish landing between
+    /// the draft's own check and its commit cannot be silently
+    /// overwritten (nor overwrite the draft's commit). A first
+    /// publish (base 0) goes through the issued-key path — the
+    /// draft minted the slug's key when it was opened; a re-publish
+    /// goes through the ordinary key-checked path.
+    pub fn publish_from_draft(
+        &self,
+        slug: &str,
+        zip_bytes: Vec<u8>,
+        supplied_key: Option<&str>,
+        key_sha256: String,
+        base_version: u64,
+        changed: Option<String>,
+    ) -> Result<Arc<Bundle>, PublishError> {
+        let lock = self.slug_lock(slug);
+        let _guard = lock.lock().unwrap();
+        let current = self.get(slug).map(|b| b.version).unwrap_or(0);
+        if current != base_version {
+            return Err(PublishError::Stale {
+                base: base_version,
+                current,
+            });
+        }
+        if current == 0 {
+            self.publish_with_issued_key(slug, zip_bytes, key_sha256, changed)
+        } else {
+            match self.publish_locked(slug, zip_bytes, supplied_key, changed)? {
+                PublishOutcome::Created { bundle, .. } => Ok(bundle),
+                PublishOutcome::Replaced { bundle } => Ok(bundle),
+            }
+        }
+    }
+
     /// Restore the previous published version — the reversibility
     /// that replaces confirmation. Runs the same commit path with the
     /// previous bytes and the previous meta (its own version, date,
     /// and change line come back with it), after preserving the
     /// current state into `prev/`, so a restore is itself reversible.
     pub fn restore(&self, slug: &str, supplied_key: Option<&str>) -> Result<Arc<Bundle>, PublishError> {
+        let lock = self.slug_lock(slug);
+        let _guard = lock.lock().unwrap();
+        self.restore_locked(slug, supplied_key)
+    }
+
+    fn restore_locked(&self, slug: &str, supplied_key: Option<&str>) -> Result<Arc<Bundle>, PublishError> {
         let current = self.get(slug).ok_or(PublishError::NoPrevious)?;
         let supplied = supplied_key.unwrap_or("");
         let supplied_hash = sha256_hex(supplied.as_bytes());
@@ -641,6 +719,73 @@ mod tests {
         assert_eq!(rb.stamps_of("index.md"), index1);
         assert_eq!(rb.stamps_of("about.md"), about2);
         assert_eq!(rb.stamps_of("new.md"), new2);
+    }
+
+    #[test]
+    fn racing_first_publishes_mint_exactly_one_key() {
+        // Eight threads publish the same fresh slug at once. Exactly
+        // one may be Created; the rest must be refused WrongKey, and
+        // the winner's key must be the key that opens the slug —
+        // before the commit lock, every racer passed the
+        // "unpublished" check and minted a key, and all but one
+        // publisher walked away holding a key that opened nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().to_path_buf()).unwrap());
+        let zip = zip_of(&[("index.md", "# Home\n")]);
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let store = store.clone();
+            let zip = zip.clone();
+            handles.push(std::thread::spawn(move || {
+                store.publish("race", zip, None, None)
+            }));
+        }
+        let mut created_keys = Vec::new();
+        let mut wrong_keys = 0;
+        for h in handles {
+            match h.join().unwrap() {
+                Ok(PublishOutcome::Created { edit_key, .. }) => created_keys.push(edit_key),
+                Ok(PublishOutcome::Replaced { .. }) => {
+                    panic!("a racing first publish reported Replaced")
+                }
+                Err(PublishError::WrongKey) => wrong_keys += 1,
+                Err(e) => panic!("unexpected publish error: {e:?}"),
+            }
+        }
+        assert_eq!(created_keys.len(), 1, "exactly one racer creates the slug");
+        assert_eq!(wrong_keys, 7, "the rest are refused, not silently overwritten");
+        assert_eq!(store.get("race").unwrap().version, 1);
+        // The winner's key — and only it — opens the slug.
+        let v2 = zip_of(&[("index.md", "# Home again\n")]);
+        store
+            .publish("race", v2, Some(&created_keys[0]), None)
+            .expect("the created key re-publishes");
+        assert_eq!(store.get("race").unwrap().version, 2);
+    }
+
+    #[test]
+    fn a_checked_draft_publish_refuses_a_moved_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let key_hash = sha256_hex(b"draft-key");
+        let v1 = zip_of(&[("index.md", "# One\n")]);
+        let bundle = store
+            .publish_from_draft("d", v1, None, key_hash.clone(), 0, None)
+            .expect("a first draft publish at base 0 lands");
+        assert_eq!(bundle.version, 1);
+        // A second draft still based on 0 is stale now.
+        let v2 = zip_of(&[("index.md", "# Two\n")]);
+        match store.publish_from_draft("d", v2.clone(), None, key_hash.clone(), 0, None) {
+            Err(PublishError::Stale { base, current }) => {
+                assert_eq!((base, current), (0, 1));
+            }
+            other => panic!("expected Stale, got {:?}", other.map(|b| b.version)),
+        }
+        // Based on the true version, it lands.
+        let bundle = store
+            .publish_from_draft("d", v2, Some("draft-key"), key_hash, 1, None)
+            .expect("a draft publish at the true base lands");
+        assert_eq!(bundle.version, 2);
     }
 
     #[test]

@@ -504,6 +504,7 @@ mod tests {
             slug: slug.to_string(),
             parsed: ParsedBundle {
                 zip_bytes: Vec::new(),
+                public_zip_bytes: Vec::new(),
                 files: files
                     .iter()
                     .map(|(path, text)| BundleFile {

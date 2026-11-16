@@ -41,7 +41,7 @@ use crate::bundle::{
     build_zip, constant_time_eq, is_markdown_path, new_edit_key, parse_working, sha256_hex,
     BundleFile, MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES,
 };
-use crate::store::{sync_dir, write_synced, PublishError, PublishOutcome, Store};
+use crate::store::{sync_dir, write_synced, PublishError, Store};
 
 /// One slug's draft: a mutable file set behind a lock, with the
 /// version it was seeded from and the hash of its only credential.
@@ -87,6 +87,7 @@ impl From<PublishError> for WorkError {
     fn from(e: PublishError) -> WorkError {
         match e {
             PublishError::WrongKey => WorkError::WrongKey,
+            PublishError::Stale { base, current } => WorkError::Stale { base, current },
             PublishError::Invalid(m) => WorkError::Invalid(m),
             PublishError::NoPrevious => WorkError::Invalid("no previous version".to_string()),
             PublishError::Io(m) => WorkError::Io(m),
@@ -339,23 +340,19 @@ impl WorkStore {
         if !guard.verify(supplied_key) {
             return Err(WorkError::WrongKey);
         }
-        let current = store.get(slug).map(|b| b.version).unwrap_or(0);
-        if current != guard.base_version {
-            return Err(WorkError::Stale {
-                base: guard.base_version,
-                current,
-            });
-        }
         let zip = build_zip(&guard.files).map_err(WorkError::Invalid)?;
-        let bundle = if current == 0 {
-            // First publish: the draft's key becomes the bundle's.
-            store.publish_with_issued_key(slug, zip, guard.key_sha256.clone(), changed)?
-        } else {
-            match store.publish(slug, zip, supplied_key, changed)? {
-                PublishOutcome::Created { bundle, .. } => bundle,
-                PublishOutcome::Replaced { bundle } => bundle,
-            }
-        };
+        // The staleness gate lives inside the store's commit lock:
+        // checked here, it would race a web publish landing between
+        // the check and the commit. publish_from_draft refuses with
+        // Stale when the bundle has moved past the draft's base.
+        let bundle = store.publish_from_draft(
+            slug,
+            zip,
+            supplied_key,
+            guard.key_sha256.clone(),
+            guard.base_version,
+            changed,
+        )?;
         guard.base_version = bundle.version;
         self.persist(slug, &guard)?;
         Ok(PublishedInfo {
