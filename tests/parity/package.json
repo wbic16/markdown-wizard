@@ -1,0 +1,8 @@
+{
+  "name": "markdown-wizard-parity-tests",
+  "private": true,
+  "description": "Playwright workflow-parity suite: every workflow on Dave Winer's markdown-publish prototype, proven against its replacement on md.phext.io.",
+  "devDependencies": {
+    "@playwright/test": "1.57.0"
+  }
+}

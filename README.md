@@ -475,6 +475,10 @@ scripts/e2e.sh        # the full run against the release binary:
                       # session (write → publish → read back at the
                       # public addresses), and the
                       # screenshots in docs/screenshots/
+scripts/parity.sh     # the workflow-parity suite (tests/parity/):
+                      # every workflow on Dave Winer's prototype,
+                      # proven against its replacement workflow
+                      # here, driven by Playwright in a real browser
 ```
 
 ## Deploy it
