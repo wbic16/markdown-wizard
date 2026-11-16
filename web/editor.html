@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>md.phext.io — a zip of markdown is the document</title>
-<link rel="icon" href="/favicon.svg">
+<link rel="icon" type="image/png" href="/favicon.png">
 <script>
 /* Theme, resolved before first paint: your own choice, stored in
    this browser ("mdwiz.theme"), wins; otherwise the OS preference;
@@ -98,7 +98,12 @@ button:hover { color: var(--accent); }
   transition: opacity 0.35s ease;
 }
 .brand {
+  display: flex; align-items: center; gap: 0.6rem;
   font-family: var(--serif); font-size: 1.25rem; padding: 1.1rem 1.2rem 0.2rem;
+}
+.brand-badge {
+  width: 34px; height: 34px; flex: none; border-radius: 50%;
+  object-fit: cover; border: 1px solid var(--line); background: #f4ecd9;
 }
 .brand .sub {
   display: block; font-family: var(--sans); font-size: 0.74rem;
@@ -304,9 +309,11 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
 <body>
 <div id="app">
   <aside id="sidebar">
-    <div class="brand">md.phext.io
-      <span class="sub">A ZIP OF MARKDOWN IS THE DOCUMENT</span>
-      <span class="sub" id="fileCount"></span>
+    <div class="brand"><img class="brand-badge" src="/mascot-badge.webp" alt="" width="34" height="34">
+      <div class="brand-text">md.phext.io
+        <span class="sub">A ZIP OF MARKDOWN IS THE DOCUMENT</span>
+        <span class="sub" id="fileCount"></span>
+      </div>
     </div>
     <div id="filterRow"><input id="filterInput" placeholder="Filter files…" spellcheck="false" title="Narrow the tree — the same match as ⌘K"></div>
     <div id="treeWrap">

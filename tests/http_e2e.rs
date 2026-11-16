@@ -223,6 +223,8 @@ fn publish_serve_republish_restore_cycle() {
     assert!(view_text.contains("Version 1 · (Your Version)"), "{view_text}");
     assert!(view_text.contains("First release"), "{view_text}");
     assert!(view_text.contains("read the source"), "{view_text}");
+    // The keeper is not on individual pages — the printed page stays clean.
+    assert!(!view_text.contains("mascot-badge"), "{view_text}");
     // The quiet suggestion is NOT on individual pages.
     assert!(!view_text.contains("edit.phext.io"), "{view_text}");
 
@@ -235,6 +237,9 @@ fn publish_serve_republish_restore_cycle() {
     assert!(index_text.contains("feed.xml"), "{index_text}");
     assert!(index_text.contains("edit.phext.io"), "{index_text}");
     assert!(index_text.contains("Version 1"), "{index_text}");
+    // …and the keeper stands beside the bundle's title, here on the index.
+    assert!(index_text.contains("keeper-badge"), "{index_text}");
+    assert!(index_text.contains("/mascot-badge.webp"), "{index_text}");
 
     // The vault is never served, listed, or fed.
     assert_eq!(get(srv.port, "/b/test-bundle/vault/secret.md").status, 404);
@@ -376,6 +381,18 @@ fn editor_and_public_surfaces_answer() {
     assert!(home_text.contains("Pattern"), "editor names the Pattern face");
     assert!(home_text.contains("Cloth"), "editor names the Cloth face");
     assert!(!home_text.to_lowercase().contains("wizard"), "the interface never says wizard");
+    // The keeper's assets answer from the binary itself: the badge
+    // crop is a WebP, the artwork serves whole, the favicon is a PNG,
+    // and the editor's brand and head name them.
+    let badge = get(srv.port, "/mascot-badge.webp");
+    assert_eq!(badge.status, 200);
+    assert!(badge.body.starts_with(b"RIFF"), "the badge is not a WebP");
+    assert_eq!(get(srv.port, "/mascot-pencil-puffball.webp").status, 200);
+    let favicon = get(srv.port, "/favicon.png");
+    assert_eq!(favicon.status, 200);
+    assert!(favicon.body.starts_with(b"\x89PNG"), "the favicon is not a PNG");
+    assert!(home_text.contains("/mascot-badge.webp"), "the brand lacks the keeper");
+    assert!(home_text.contains("/favicon.png"), "the editor lacks the keeper favicon");
     // The render API is the one renderer behind both faces.
     let rr = request(srv.port, "POST", "/api/render", &[], b"# Title\n\nSome *text*.\n");
     assert_eq!(rr.status, 200);

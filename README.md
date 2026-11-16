@@ -22,6 +22,11 @@ shape of tool — and because its bigger sibling,
 like with all eleven dimensions left in. The editor carries one
 quiet line about that, in its footer and nowhere it would nag.
 
+The keeper of the place is the Pencil Puffball — a paper-white
+puff in an indigo cap, pencil held like a staff. It stands in the
+editor's brand block and beside each bundle's title, and it is
+the favicon; the reading pages themselves stay clean print.
+
 ## Writing
 
 Open `md.phext.io` and a file is already open — a new bundle is born

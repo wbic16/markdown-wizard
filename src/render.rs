@@ -214,6 +214,11 @@ body {
   color: var(--faint); margin: 0 0 0.6rem;
 }
 .title-block { border-bottom: 1px solid var(--ink); padding-bottom: 1rem; margin-bottom: 1.8rem; }
+.title-block.keeper { display: flex; align-items: center; gap: 1.1rem; }
+.keeper-badge {
+  width: 52px; height: 52px; flex: none; border-radius: 50%;
+  object-fit: cover; border: 1px solid var(--line); background: #f4ecd9;
+}
 h1.display {
   font-family: var(--serif); font-weight: 600; font-size: 2.4rem;
   line-height: 1.15; margin: 0;
@@ -312,7 +317,7 @@ fn shell(title: &str, body: &str) -> String {
     format!(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <title>{}</title>\n<link rel=\"icon\" href=\"/favicon.svg\">\n\
+         <title>{}</title>\n<link rel=\"icon\" type=\"image/png\" href=\"/favicon.png\">\n\
          <script>{THEME_SNIPPET}</script>\n\
          <style>{SITE_CSS}</style>\n</head>\n<body>\n<div class=\"page\">\n{body}\n</div>\n</body>\n</html>\n",
         html_escape(title)
@@ -373,8 +378,8 @@ pub fn index_page(bundle: &Bundle, base: &str) -> String {
     }
 
     let body = format!(
-        "<div class=\"title-block\"><p class=\"eyebrow\">A bundle of markdown</p>\
-         <h1 class=\"display\">{}</h1></div>\n\
+        "<div class=\"title-block keeper\"><img class=\"keeper-badge\" src=\"/mascot-badge.webp\" alt=\"\"><div><p class=\"eyebrow\">A bundle of markdown</p>\
+         <h1 class=\"display\">{}</h1></div></div>\n\
          {intro}\n\
          <ol class=\"tracklist\">{list}</ol>\n\
          <p class=\"feed-line\">This bundle has a feed: <a href=\"feed.xml\">RSS</a> — \
@@ -521,6 +526,12 @@ mod tests {
         // no-JS media-query fallback.
         assert!(page.contains(":root[data-theme=\"dark\"]"));
         assert!(page.contains(":root:not([data-theme])"));
+    }
+
+    #[test]
+    fn published_pages_carry_the_keeper_favicon() {
+        let page = not_found_page("x");
+        assert!(page.contains("<link rel=\"icon\" type=\"image/png\" href=\"/favicon.png\">"), "{page}");
     }
 
     #[test]

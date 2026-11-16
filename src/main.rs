@@ -35,6 +35,13 @@ use work::WorkStore;
 
 const EDITOR_HTML: &str = include_str!("../web/editor.html");
 const FAVICON_SVG: &str = include_str!("../web/favicon.svg");
+const FAVICON_PNG: &[u8] = include_bytes!("../web/favicon.png");
+
+/// The keeper of the place: the Pencil Puffball, chosen by Will
+/// (2026-11-15). The artwork of record and the round badge cropped
+/// from it — compiled in, like everything else the server serves.
+const MASCOT_ARTWORK: &[u8] = include_bytes!("../web/mascot-pencil-puffball.webp");
+const MASCOT_BADGE: &[u8] = include_bytes!("../web/mascot-badge.webp");
 const ROBOTS_TXT: &str = "User-agent: *\nAllow: /\n";
 const RENDER_CAP: usize = 1024 * 1024;
 
@@ -160,6 +167,15 @@ fn handle(stream: &mut TcpStream, store: &Arc<Store>, work: &Arc<WorkStore>) {
         }
         ("GET" | "HEAD", "/favicon.svg") | ("GET" | "HEAD", "/favicon.ico") => {
             http::send_response(stream, 200, "image/svg+xml", FAVICON_SVG.as_bytes(), CacheClass::Static, &headers, head_only)
+        }
+        ("GET" | "HEAD", "/favicon.png") => {
+            http::send_response(stream, 200, "image/png", FAVICON_PNG, CacheClass::Static, &headers, head_only)
+        }
+        ("GET" | "HEAD", "/mascot-pencil-puffball.webp") => {
+            http::send_response(stream, 200, "image/webp", MASCOT_ARTWORK, CacheClass::Static, &headers, head_only)
+        }
+        ("GET" | "HEAD", "/mascot-badge.webp") => {
+            http::send_response(stream, 200, "image/webp", MASCOT_BADGE, CacheClass::Static, &headers, head_only)
         }
         ("GET" | "HEAD", "/robots.txt") => {
             http::send_response(stream, 200, TEXT, ROBOTS_TXT.as_bytes(), CacheClass::Static, &headers, head_only)

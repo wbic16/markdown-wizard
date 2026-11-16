@@ -96,6 +96,22 @@ curl -sf "$BASE/b/e2e-bundle.zip" > "$WORK/dl.zip"
 cmp "$WORK/bundle-v1.zip" "$WORK/dl.zip" || fail "downloaded bundle differs from the published zip"
 note "index, reading view, feed, vault privacy, download: all as designed"
 
+# ——— the keeper's assets ———
+curl -sf "$BASE/mascot-badge.webp" > "$WORK/badge.webp"
+python3 -c "
+d = open('$WORK/badge.webp','rb').read()
+assert d[:4] == b'RIFF' and d[8:12] == b'WEBP', 'badge is not a WebP'
+"
+curl -sf "$BASE/favicon.png" > "$WORK/favicon.png"
+python3 -c "
+d = open('$WORK/favicon.png','rb').read()
+assert d[:4] == b'\x89PNG', 'favicon is not a PNG'
+"
+grep -q "mascot-badge" "$WORK/index.html" || fail "bundle index lacks the keeper"
+grep -q "mascot-badge" "$WORK/view.html" && fail "a reading page carries the keeper"
+curl -sf "$BASE/" | grep -q "mascot-badge" || fail "editor brand lacks the keeper"
+note "the keeper: badge and favicon serve; index and editor wear it; reading pages stay clean"
+
 # ——— wrong key, then the right one ———
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/publish" -H "X-Slug: e2e-bundle" \
   -H "X-Edit-Key: not-the-key" --data-binary @"$WORK/bundle-v2.zip")
