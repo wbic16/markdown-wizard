@@ -62,6 +62,36 @@ start, when missing outputs are rebuilt.
   `/b/<slug>/` address; delete its directory under
   `/source/markdown-wizard-data` afterwards if it was only a test.
 
+## Federation (sign-in with edit.phext.io)
+
+Federation is on by default and needs no deploy step:
+
+- **Callback URL** — `https://md.phext.io/auth/callback`. The
+  server derives it per request from the `Host` and
+  `X-Forwarded-Proto` headers, which the shipped nginx site
+  already passes; `/auth/*` and the vault endpoints ride the
+  existing `location /` proxy, so no new nginx location exists.
+- **Registration** — none by hand. At the first sign-in the
+  server registers itself with edit.phext.io's dynamic client
+  registration as a public client (no secret; PKCE S256 is the
+  credential) and caches the client id in its state. If the
+  provider ever answers `invalid_client`, the cached
+  registration is dropped and the next sign-in re-registers.
+- **State** — `<data>/fed/state.json` (mode 0600) holds the
+  cached registration and every live session's access/refresh
+  token pair. **Treat it like a secret**: it is the one file
+  that can act as a signed-in user, and it belongs in the data
+  directory's backups. Losing it signs everyone out and nothing
+  more; the vaults live on edit.phext.io, untouched.
+- **Env** — `MDWIZ_FEDERATION=off` disables the door;
+  `MDWIZ_PHEXT_ISSUER` overrides the provider (default
+  `https://edit.phext.io`).
+- **One provider-side condition** — edit.phext.io's MCP gate
+  requires the signed-in account to be on its editor list; a
+  user outside it can complete sign-in but vault calls answer
+  403, and the editor surfaces that answer rather than hiding
+  it.
+
 ## Roll back
 
 ```

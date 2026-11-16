@@ -184,13 +184,16 @@ curl -sf "$BASE/b/e2e-bundle/essays/one.md" | grep -q "Second version." || fail 
 note "restore swaps the two versions cleanly"
 
 # ——— the ways-to-use-it page ———
-curl -sf "$BASE/integrate" | grep -q "https://tluf.org" || fail "integrate page lacks the tluf.org link"
-curl -sf "$BASE/integrate" | grep -q "md.phext.io/mcp" || fail "integrate page lacks the MCP endpoint"
-curl -sf "$BASE/integrate" | grep -q "application password" || fail "integrate page lacks the WordPress steps"
+curl -sf "$BASE/integrate" > "$WORK/integrate.html"
+grep -q "https://tluf.org" "$WORK/integrate.html" || fail "integrate page lacks the tluf.org link"
+grep -q "md.phext.io/mcp" "$WORK/integrate.html" || fail "integrate page lacks the MCP endpoint"
+grep -q "application password" "$WORK/integrate.html" || fail "integrate page lacks the WordPress steps"
 curl -sf "$BASE/mascot-badge.webp" -o "$WORK/mascot-badge.webp" || fail "the mascot badge is not served"
 head -c 4 "$WORK/mascot-badge.webp" | grep -q "RIFF" || fail "the mascot badge is not the webp"
-curl -sf "$BASE/" | grep -q 'href="/integrate"' || fail "the editor does not link the integrate page"
-curl -sf "$BASE/b/e2e-bundle/" | grep -q 'href="/integrate"' || fail "the bundle index does not link the integrate page"
+curl -sf "$BASE/" > "$WORK/editor-link.html"
+grep -q 'href="/integrate"' "$WORK/editor-link.html" || fail "the editor does not link the integrate page"
+curl -sf "$BASE/b/e2e-bundle/" > "$WORK/bundle-index-link.html"
+grep -q 'href="/integrate"' "$WORK/bundle-index-link.html" || fail "the bundle index does not link the integrate page"
 note "integrate page served and linked: MCP, WordPress, hosting, tluf.org, the mascot"
 
 # ——— the editor, in a real browser ———
@@ -281,5 +284,19 @@ printf '# Deep Note\n\nThe agent was here.\n' > "$WORK/agent-deep.md"
 curl -sf "$BASE/b/agent-bundle/notes/deep.md" -o "$WORK/agent-deep-got.md" || fail "the agent's file is not public"
 cmp "$WORK/agent-deep.md" "$WORK/agent-deep-got.md" || fail "the public bytes differ from the agent's write"
 curl -sf "$BASE/b/agent-bundle/notes/deep" | grep -q 'The agent was here.' || fail "the reading view lacks the agent's words"
+
+# ——— federation surface: the door is visible signed out ———
+# The full OAuth + vault flow runs against a local stub of
+# edit.phext.io in tests/fed_e2e.rs; this leg only proves the
+# deployment answers the editor's boot question honestly, keeps
+# the vault endpoints behind the session, and shows the door.
+ME=$(curl -sf "$BASE/api/me")
+echo "$ME" | grep -q '"federation":true' || fail "federation is not on: $ME"
+echo "$ME" | grep -q '"signed_in":false' || fail "a fresh visitor is somehow signed in: $ME"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/vault")
+[ "$CODE" = "401" ] || fail "the vault endpoint answered $CODE signed-out, not 401"
+curl -sf "$BASE/" > "$WORK/editor.html"
+grep -q 'id="accountBtn"' "$WORK/editor.html" || fail "the editor lacks the sign-in affordance"
+note "federation surface: honest signed-out answers, vault behind the session, door visible"
 
 echo "E2E OK"

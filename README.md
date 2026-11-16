@@ -301,6 +301,83 @@ door is an OAuth2 sign-in, not an application password, and a
 wordpress.com address is refused at save time with that said
 plainly.
 
+## Your vault on edit.phext.io
+
+Sign-in is a door, never a gate. Everything above works signed
+out, and local drafts are never held hostage to an account. The
+editor's chrome carries a quiet **Sign in with edit.phext.io**;
+signed in, it becomes **Your vault on edit.phext.io**, and your
+drafts gain a second home: a phext on edit.phext.io, written
+under your own identity.
+
+**How sign-in works.** OAuth 2.1 authorization code + PKCE
+(S256) against edit.phext.io's authorization server, scopes
+`phext:read phext:write`. There is no client secret and nothing
+to register by hand: the server registers itself through the
+provider's dynamic client registration the first time anyone
+signs in, and caches the client id beside its state. It is a
+public client — the PKCE verifier is the credential, which is
+also the flow the provider's own tests exercise. The access and
+refresh tokens never reach the browser: this server holds them
+(in `<data>/fed/state.json`, mode 0600) behind its own HttpOnly
+session cookie, and calls the provider's MCP endpoint (`/mcp`:
+`list_phexts`, `read_scroll`, `write_scroll`) with the user's
+own token. The vault is the *user's* phext under the *user's*
+sign-in — never a service account's.
+
+**The vault.** One phext per user, named
+`mdwiz-vault-<ten random characters>` — recognisably ours,
+collision-free, and the discovery filter: signing in from a new
+browser lists the hosted `mdwiz-vault-*` phexts and offers yours
+by the label you gave it. Inside, a scroll is a page:
+
+| Address | Holds |
+|---|---|
+| `1.1.1/1.1.1/1.1.1` | the vault manifest: label, and one line per bundle |
+| `1.2.n/1.1.1/1.1.1` | bundle *n*'s manifest: one line per file — revision, SHA-256, path |
+| `2.1.n/1.1.m/1.1.1` | file *m* of bundle *n*: the markdown itself |
+
+Each manifest is one contiguous scroll, as a phext manifest
+should be. A vault begins life as a one-scroll phext file — the
+manifest itself — which the editor serves as a download
+(**Download `<name>.phext`** in the vault screen); the user hosts
+it at edit.phext.io/submit (or an operator places it), because
+the provider's MCP surface has no create-phext call. Until then
+the vault is in its first-class *not hosted yet* state, which
+the editor explains rather than errors on.
+
+**The sync model, plainly.** Signing in opens the vault screen
+with three doors: save this browser's bundle into the vault,
+bring a vault bundle into this browser, or leave both side by
+side — the vault holds every bundle; a browser opens one at a
+time, and adopting one saves the open one first when it has a
+name. While signed in, edits save through to the vault a few
+seconds behind the local autosave, and the chrome shows the
+quiet state beside *Saved ✓* — *In your vault ✓*. Sync is
+per-file, by revision and SHA-256 against the last synced
+state:
+
+- only the local copy changed → it is written;
+- only the vault copy changed → a pull offers it, a push leaves
+  it and says so;
+- **both changed → a conflict, never a silent overwrite.** The
+  file waits in the vault screen as a choice: *keep mine* /
+  *take the vault's*;
+- a local delete clears the vault copy only if the vault copy
+  has not moved since the last sync; otherwise that too is a
+  conflict, and a pull never resurrects a file this browser
+  deleted on purpose.
+
+Text files only: a non-text file in a bundle is reported as not
+carried, never silently dropped. The editor's local put-away
+vault (`vault/` inside a bundle) is a different thing, keeps
+its name, and is never synced.
+
+**Off switches.** `MDWIZ_FEDERATION=off` removes the door
+entirely (the editor is then exactly the local-first tool);
+`MDWIZ_PHEXT_ISSUER` points the flow at another issuer (a
+staging edit.phext.io) and defaults to `https://edit.phext.io`.
+
 ## What was distilled
 
 This repo is a distillation of two of Will Bickford's, per his

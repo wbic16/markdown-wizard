@@ -196,6 +196,27 @@ button:hover { color: var(--accent); }
 #stateWord { font-family: var(--serif); font-style: italic; color: var(--soft); font-size: 0.92rem; }
 #savedWord { color: var(--faint); font-size: 0.8rem; opacity: 0; transition: opacity 0.8s ease; }
 #savedWord.show { opacity: 1; transition: opacity 0.15s ease; }
+#vaultWord { color: var(--faint); font-size: 0.8rem; margin-right: 0.2rem; }
+#vaultScreen {
+  display: none; position: fixed; inset: 0; background: var(--paper); z-index: 30;
+  overflow-y: auto;
+}
+#vaultScreen.open { display: block; }
+#vaultScreen input[type="text"] {
+  width: 100%; font-family: var(--mono); font-size: 1.05rem; color: var(--ink);
+  background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 0.55rem 0.7rem;
+}
+#vaultMsg { margin-top: 1.2rem; font-family: var(--serif); font-size: 1.05rem; }
+#vaultMsg.err { color: var(--err); }
+.vault-choice {
+  border: 1px solid var(--line); border-radius: 8px; padding: 0.8rem 1rem;
+  margin: 0.6rem 0; background: var(--card);
+}
+.vault-choice .vname { font-family: var(--mono); font-size: 0.95rem; }
+.conflict-row {
+  display: flex; gap: 0.6rem; align-items: baseline; margin: 0.4rem 0;
+  font-family: var(--mono); font-size: 0.9rem; flex-wrap: wrap;
+}
 #releaseBtn {
   color: var(--accent); border: 1px solid var(--accent); border-radius: 6px;
   padding: 0.35rem 0.9rem; background: var(--card); font-family: var(--serif); font-size: 1rem;
@@ -363,6 +384,7 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
         <span id="pubAddr"></span>
       </div>
       <div class="chrome-right">
+        <span id="vaultWord"></span>
         <span id="savedWord">Saved ✓</span>
         <span id="stateWord">Drafting</span>
         <button id="vaultBtn" title="Put this file in the vault">Put in the vault</button>
@@ -370,6 +392,7 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
         <button id="themeBtn">System</button>
         <a id="waysLink" href="/integrate" title="Your LLM, WordPress, your own hosting">Ways to use it</a>
         <button id="releaseBtn">Release</button>
+        <button id="accountBtn" style="display:none">Sign in with edit.phext.io</button>
       </div>
     </header>
     <div id="faces">
@@ -460,6 +483,20 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
   </div>
 </section>
 
+<section id="vaultScreen">
+  <div class="release-inner">
+    <p class="eyebrow" style="font-size:0.72rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--faint)">edit.phext.io</p>
+    <h1>Your vault on edit.phext.io</h1>
+    <p class="lede">Your drafts, kept in a phext that is yours — written under your own sign-in, there wherever you sign in. This browser keeps its local drafts either way; signing in is a door, never a gate. (The put-away vault in the sidebar is a different, local thing.)</p>
+    <div id="vaultMain"></div>
+    <p id="vaultMsg"></p>
+    <div style="margin-top:2rem">
+      <button class="quiet-action" id="vaultBack">Back to writing</button>
+      <button class="quiet-action" id="signOutBtn" style="display:none;margin-left:1rem">Sign out</button>
+    </div>
+  </div>
+</section>
+
 <script>
 "use strict";
 /* ════════════════ the model ════════════════
@@ -478,6 +515,7 @@ const S = {
   version: null,
   view: {},                // path -> {caret, scroll} for exact resumption
   vaultDates: {},          // path -> ISO date it entered the vault
+  vaultSync: {},           // path -> {rev, hash} of the edit.phext.io vault copy last synced
   eraDismissed: false,
   freshSeed: false,        // true only for a brand-new bundle's first open
 };
@@ -690,9 +728,11 @@ function persist() {
         current: S.current, slug: S.slug, keys: S.keys,
         publishedHash: S.publishedHash, version: S.version,
         view: S.view, vaultDates: S.vaultDates, eraDismissed: S.eraDismissed,
+        vaultSync: S.vaultSync,
       };
       localStorage.setItem(LS_KEY, JSON.stringify(data));
       flashSaved();
+      queueVaultPush();
     } catch (e) { /* storage full or unavailable: the draft lives in memory */ }
   }, 300);
 }
@@ -710,6 +750,7 @@ function restore() {
     S.version = d.version || null;
     S.view = d.view || {};
     S.vaultDates = d.vaultDates || {};
+    S.vaultSync = d.vaultSync || {};
     S.eraDismissed = !!d.eraDismissed;
     return true;
   } catch (e) { return false; }
@@ -1621,6 +1662,394 @@ wpDisconnect.addEventListener("click", async () => {
   }
 });
 
+
+/* ════════════════ your vault on edit.phext.io ════════════════
+   Federation is a door, never a gate: everything above works
+   signed out, and local drafts are never held hostage to an
+   account. Signed in, this browser's drafts also live in a phext
+   vault on edit.phext.io — under your own identity, written by
+   the server with your own token (this page never sees it).
+   The put-away vault (vault/…) is a different, local thing and
+   keeps its name; this one is always "your vault on
+   edit.phext.io". */
+const FED = {
+  enabled: false, signedIn: false, vaultName: null, vaultLabel: null,
+  status: null, busy: false, conflicts: [], vaultNewer: [],
+};
+const vaultWord = document.getElementById("vaultWord");
+const accountBtn = document.getElementById("accountBtn");
+const vaultScreen = document.getElementById("vaultScreen");
+const vaultMain = document.getElementById("vaultMain");
+const vaultMsg = document.getElementById("vaultMsg");
+
+async function sha256Hex(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+/* The sync classifier — the same table the server plans with
+   (fed.rs: plan_push), kept pure so the self-test can hold both
+   sides to it. Given the local file's hash and its base (the
+   vault state at last sync), and the vault manifest entry (or
+   null), what should a push do with this file? */
+function syncClass(local, vault) {
+  if (!vault) {
+    if (local.base_rev === 0) return "write";
+    return local.hash === local.base_hash ? "skip" : "conflict";
+  }
+  if (local.hash === vault.sha256) return "skip";
+  const lc = local.hash !== local.base_hash;
+  const vc = vault.rev !== local.base_rev || vault.sha256 !== local.base_hash;
+  if (lc && !vc) return "write";
+  if (!lc && vc) return "vault-newer";
+  if (!lc && !vc) return "skip";
+  return "conflict";
+}
+
+function setVaultWord(text) { vaultWord.textContent = text || ""; }
+
+async function fedFetch(path, body) {
+  const opts = body
+    ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    : {};
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const e = new Error(data.message || data.error || `the server answered ${r.status}`);
+    e.data = data;
+    throw e;
+  }
+  return data;
+}
+
+async function refreshAccount() {
+  try {
+    const me = await fedFetch("/api/me");
+    FED.enabled = !!me.federation;
+    FED.signedIn = !!me.signed_in;
+    FED.vaultName = me.vault_name || null;
+    FED.vaultLabel = me.vault_label || null;
+  } catch (e) { FED.enabled = false; FED.signedIn = false; }
+  accountBtn.style.display = FED.enabled ? "" : "none";
+  accountBtn.textContent = FED.signedIn
+    ? "Your vault on edit.phext.io"
+    : "Sign in with edit.phext.io";
+  if (!FED.signedIn) setVaultWord("");
+  else if (!FED.vaultName) setVaultWord("Signed in — no vault yet");
+}
+
+accountBtn.addEventListener("click", () => {
+  if (!FED.signedIn) { location.href = "/auth/login"; return; }
+  openVaultScreen();
+});
+document.getElementById("vaultBack").addEventListener("click", () => {
+  vaultScreen.classList.remove("open");
+  editor.focus();
+});
+document.getElementById("signOutBtn").addEventListener("click", async () => {
+  await fetch("/auth/logout", { method: "POST" }).catch(() => {});
+  FED.signedIn = false; FED.vaultName = null; FED.status = null;
+  FED.conflicts = []; FED.vaultNewer = [];
+  setVaultWord("");
+  await refreshAccount();
+  vaultScreen.classList.remove("open");
+  editor.focus();
+});
+
+async function openVaultScreen() {
+  vaultScreen.classList.add("open");
+  vaultMsg.textContent = "";
+  vaultMsg.className = "";
+  vaultMain.innerHTML = "<p class=\"lede\">Looking in your vault…</p>";
+  try {
+    FED.status = await fedFetch("/api/vault");
+  } catch (e) {
+    vaultMain.innerHTML = "";
+    vaultMsg.className = "err";
+    vaultMsg.textContent = e.message;
+    return;
+  }
+  document.getElementById("signOutBtn").style.display = "";
+  renderVaultMain();
+}
+
+function renderVaultMain() {
+  const st = FED.status || {};
+  const v = st.vault;
+  vaultMsg.className = "";
+  vaultMsg.textContent = st.provider_error || "";
+  if (st.provider_error) vaultMsg.className = "err";
+  if (!v) {
+    const found = st.found || [];
+    let html = "";
+    if (found.length) {
+      html += "<p class=\"field-label\">Vaults found under your sign-in</p>" + found.map(f =>
+        `<div class="vault-choice"><span class="vname">${escapeHtml(f.name)}</span><br>` +
+        `<span class="quiet-action">${escapeHtml(f.label || "Untitled vault")}` +
+        (f.bundles && f.bundles.length ? " · holds " + f.bundles.map(escapeHtml).join(", ") : "") +
+        `</span><br><button data-choose="${escapeHtml(f.name)}">Use this vault</button></div>`).join("");
+      html += "<p class=\"field-label\">Or start another</p>";
+    } else {
+      html += "<p class=\"lede\">No vault yet. Start one, and your drafts gain a second home — a phext on edit.phext.io, under your own name.</p>";
+    }
+    html += `<input type="text" id="vaultLabelInput" placeholder="Name it — e.g. Field notes" spellcheck="false">
+             <div style="margin-top:0.8rem"><button id="vaultNewBtn">Start a vault</button></div>`;
+    vaultMain.innerHTML = html;
+    vaultMain.querySelectorAll("[data-choose]").forEach(b =>
+      b.addEventListener("click", async () => {
+        try {
+          await fedFetch("/api/vault/choose", { name: b.dataset.choose });
+          await refreshAccount();
+          await openVaultScreen();
+        } catch (e) { vaultMsg.className = "err"; vaultMsg.textContent = e.message; }
+      }));
+    const nb = document.getElementById("vaultNewBtn");
+    if (nb) nb.addEventListener("click", async () => {
+      const label = document.getElementById("vaultLabelInput").value.trim();
+      try {
+        await fedFetch("/api/vault/new", { label });
+        await refreshAccount();
+        await openVaultScreen();
+      } catch (e) { vaultMsg.className = "err"; vaultMsg.textContent = e.message; }
+    });
+    return;
+  }
+  if (!v.hosted) {
+    vaultMain.innerHTML =
+      `<p class="lede">Your vault has a name — <span style="font-family:var(--mono)">${escapeHtml(v.name)}</span> — but the phext itself is not hosted on edit.phext.io yet. A vault starts life as a one-scroll phext file: its own manifest.</p>` +
+      `<p class="field-label">Bring it to life</p>` +
+      `<p>1. <a href="/api/vault/starter" download>Download ${escapeHtml(v.name)}.phext</a></p>` +
+      `<p>2. Host it at <a href="https://edit.phext.io/submit" target="_blank" rel="noopener">edit.phext.io/submit</a> — signed in there as yourself; the vault must live under your own identity.</p>` +
+      `<p>3. Come back and reopen this screen — it will find the vault waiting.</p>`;
+    return;
+  }
+  const bundles = st.bundles || [];
+  const others = bundles.filter(b => b.slug !== S.slug);
+  vaultMain.innerHTML =
+    `<p class="lede"><span style="font-family:var(--mono)">${escapeHtml(v.name)}</span>` +
+    (v.label ? " — " + escapeHtml(v.label) : "") + `. Hosted, and yours.</p>` +
+    `<p class="field-label">This bundle</p>` +
+    `<p>${S.slug ? "“" + escapeHtml(S.slug) + "”" : "This bundle has no name yet — the vault will ask for one when it first saves it (the name becomes its address when you release it)."}</p>` +
+    `<div><button id="vaultPushBtn">Save this bundle to the vault</button>` +
+    `<button class="quiet-action" id="vaultPullBtn" style="margin-left:1rem">Bring the vault's copy here</button></div>` +
+    `<div id="conflictBox"></div>` +
+    (others.length
+      ? `<p class="field-label">Also in this vault</p>` + others.map(b =>
+          `<div class="vault-choice"><span class="vname">${escapeHtml(b.slug)}</span> ` +
+          `<span class="quiet-action">bundle rev ${b.rev}</span><br>` +
+          `<button data-pull="${escapeHtml(b.slug)}">Bring it into this browser</button></div>`).join("")
+      : "") +
+    `<p class="quiet-action" style="margin-top:2rem">While you are signed in, edits save through to the vault on their own. Anything the vault holds that this browser also changed is never overwritten — it waits here as a choice. Both can live side by side: the vault holds every bundle; this browser opens one at a time.</p>`;
+  document.getElementById("vaultPushBtn").addEventListener("click", () => vaultPush());
+  document.getElementById("vaultPullBtn").addEventListener("click", () => vaultPull(S.slug, {}));
+  vaultMain.querySelectorAll("[data-pull]").forEach(b =>
+    b.addEventListener("click", () => vaultPull(b.dataset.pull, { adopt: true })));
+  renderConflicts();
+}
+
+function renderConflicts() {
+  const box = document.getElementById("conflictBox");
+  if (!box) return;
+  let html = "";
+  if (FED.vaultNewer && FED.vaultNewer.length) {
+    html += `<p class="field-label">The vault holds newer work</p>` +
+      `<p class="quiet-action">${FED.vaultNewer.map(escapeHtml).join(", ")} changed in the vault since this browser last synced.</p>` +
+      `<div><button id="takeNewerBtn">Bring the newer files here</button></div>`;
+  }
+  const list = FED.conflicts || [];
+  if (list.length) {
+    html += `<p class="field-label">Both copies changed — your choice, per file</p>` + list.map(c =>
+      `<div class="conflict-row"><span>${escapeHtml(c.path)}</span>` +
+      `<button data-keep="${escapeHtml(c.path)}">Keep mine</button>` +
+      `<button data-take="${escapeHtml(c.path)}">Take the vault's</button></div>`).join("");
+  }
+  box.innerHTML = html;
+  const tn = document.getElementById("takeNewerBtn");
+  if (tn) tn.addEventListener("click", async () => { await vaultPull(S.slug, {}); });
+  box.querySelectorAll("[data-keep]").forEach(b =>
+    b.addEventListener("click", async () => { await vaultPush([b.dataset.keep]); }));
+  box.querySelectorAll("[data-take]").forEach(b =>
+    b.addEventListener("click", async () => { await vaultPull(S.slug, { take: [b.dataset.take] }); }));
+}
+
+function noteConflicts(list) {
+  const byPath = new Map((FED.conflicts || []).map(c => [c.path, c]));
+  for (const c of list || []) byPath.set(c.path, c);
+  FED.conflicts = [...byPath.values()];
+  if (FED.conflicts.length) setVaultWord("Vault: a choice is waiting");
+  renderConflicts();
+}
+
+function applyBaseUpdates(list) {
+  for (const u of list || []) {
+    if (u.rev > 0) S.vaultSync[u.path] = { rev: u.rev, hash: u.hash };
+    else delete S.vaultSync[u.path];
+  }
+}
+
+async function currentBundlePayload() {
+  const files = [];
+  for (const [p, f] of publishableFiles()) {
+    const hash = await sha256Hex(f.text);
+    const base = S.vaultSync[p] || { rev: 0, hash: "" };
+    const entry = { path: p, hash, base_rev: base.rev, base_hash: base.hash };
+    if (hash !== base.hash) entry.text = f.text;
+    files.push(entry);
+  }
+  const deleted = Object.keys(S.vaultSync)
+    .filter(p => !S.files.has(p))
+    .map(p => ({ path: p, base_rev: S.vaultSync[p].rev }));
+  return { files, deleted };
+}
+
+async function ensureSlugForVault() {
+  if (S.slug) return S.slug;
+  const name = prompt("Name this bundle for the vault — the name becomes its address when you release it:", "");
+  if (!name) return null;
+  const slug = name.trim().toLowerCase();
+  if (!/^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$/.test(slug)) {
+    vaultMsg.className = "err";
+    vaultMsg.textContent = "That name cannot be an address — lowercase letters, digits, hyphens.";
+    return null;
+  }
+  S.slug = slug;
+  persist();
+  return slug;
+}
+
+/* Push this browser's bundle toward the vault. Quiet pushes
+   (from autosave) never prompt and never open screens: they set
+   the vault word and leave conflicts waiting in the dialog. */
+async function vaultPush(force = [], opts = {}) {
+  if (FED.busy || !FED.signedIn) return;
+  const slug = opts.quiet ? S.slug : await ensureSlugForVault();
+  if (!slug) return;
+  FED.busy = true;
+  setVaultWord("Saving to your vault…");
+  try {
+    const { files, deleted } = await currentBundlePayload();
+    const res = await fedFetch("/api/vault/sync", { bundle: slug, files, deleted, force });
+    for (const p of force) FED.conflicts = FED.conflicts.filter(c => c.path !== p);
+    applyBaseUpdates(res.files);
+    persist();
+    if ((res.conflicts || []).length) noteConflicts(res.conflicts);
+    else if ((res.vault_newer || []).length) {
+      FED.vaultNewer = res.vault_newer;
+      setVaultWord("Vault holds newer work");
+      renderConflicts();
+    } else {
+      FED.vaultNewer = [];
+      setVaultWord("In your vault ✓");
+      renderConflicts();
+    }
+    return res;
+  } catch (e) {
+    if (e.data && e.data.error === "vault_not_hosted") {
+      setVaultWord("Vault not hosted yet");
+      if (!opts.quiet) openVaultScreen();
+    } else {
+      setVaultWord("Vault unreachable");
+      if (!opts.quiet) { vaultMsg.className = "err"; vaultMsg.textContent = e.message; }
+    }
+  } finally { FED.busy = false; }
+}
+
+/* Pull the vault's copy of a bundle toward this browser. With
+   {adopt:true} the named bundle replaces the one open here —
+   after a plain confirmation, and after the open bundle has
+   been saved to the vault if it has a name — which is how both
+   live side by side: all of them in the vault, one open here. */
+async function vaultPull(slug, opts = {}) {
+  if (FED.busy || !FED.signedIn) return;
+  if (!slug) {
+    vaultMsg.className = "";
+    vaultMsg.textContent = "The vault holds nothing under a name this bundle does not have yet — save it to the vault first, or bring another bundle in below.";
+    return;
+  }
+  if (opts.adopt) {
+    if (!confirm(`Bring “${slug}” into this browser? It replaces the bundle open here. The one open now stays in the vault and wherever you released it.`)) return;
+    if (S.slug && S.slug !== slug) { try { await vaultPush([], { quiet: true }); } catch (e) {} }
+  }
+  FED.busy = true;
+  try {
+    const local = [];
+    if (!opts.adopt) {
+      for (const [p, f] of publishableFiles()) {
+        const hash = await sha256Hex(f.text);
+        const base = S.vaultSync[p] || { rev: 0, hash: "" };
+        local.push({ path: p, hash, base_rev: base.rev, base_hash: base.hash });
+      }
+    }
+    const deleted = opts.adopt ? [] : Object.keys(S.vaultSync)
+      .filter(p => !S.files.has(p))
+      .map(p => ({ path: p, base_rev: S.vaultSync[p].rev }));
+    const res = await fedFetch("/api/vault/pull", {
+      bundle: slug, local, deleted, take: opts.take || [],
+    });
+    if (!res.exists) {
+      vaultMsg.className = "";
+      vaultMsg.textContent = "The vault holds no bundle by that name yet.";
+      return res;
+    }
+    if (opts.adopt) {
+      S.files = new Map();
+      S.vaultSync = {};
+      S.slug = slug;
+      S.publishedHash = null;
+      S.version = null;
+      S.current = null;
+    }
+    for (const p of opts.take || []) FED.conflicts = FED.conflicts.filter(c => c.path !== p);
+    for (const f of res.files || []) {
+      S.files.set(f.path, { kind: "text", text: f.text });
+      S.vaultSync[f.path] = { rev: f.rev, hash: f.hash };
+    }
+    if ((res.local_ahead || []).length) {
+      vaultMsg.className = "";
+      vaultMsg.textContent = "Kept yours, which the vault has not seen: " + res.local_ahead.join(", ") + ". Save to the vault when ready.";
+    }
+    noteConflicts(res.conflicts);
+    if (!(res.conflicts || []).length) setVaultWord("In your vault ✓");
+    renderSidebar();
+    openFile(S.current && S.files.has(S.current) ? S.current : sidebarOrder()[0], {});
+    updateChrome();
+    persist();
+    if (vaultScreen.classList.contains("open")) {
+      FED.status = await fedFetch("/api/vault").catch(() => FED.status);
+      renderVaultMain();
+    }
+    return res;
+  } catch (e) {
+    if (e.data && e.data.error === "vault_not_hosted") {
+      setVaultWord("Vault not hosted yet");
+      openVaultScreen();
+    } else {
+      vaultMsg.className = "err";
+      vaultMsg.textContent = e.message;
+    }
+  } finally { FED.busy = false; }
+}
+
+/* Save-through: the autosave debounce chains a quiet push,
+   2.5 s behind the local save. Only for a bundle the vault
+   already knows by name — naming is a deliberate act, never
+   something a background timer does on its own. */
+let vaultPushTimer = null;
+function queueVaultPush() {
+  if (!FED.signedIn || !FED.vaultName || !S.slug) return;
+  clearTimeout(vaultPushTimer);
+  vaultPushTimer = setTimeout(() => { vaultPush([], { quiet: true }); }, 2500);
+}
+
+/* After sign-in, the three doors are offered in one place — the
+   vault screen itself: save this browser's bundle in, bring a
+   vault bundle here, or leave both side by side (every bundle
+   listed under the account, one open at a time). */
+async function offerVaultAfterSignIn() {
+  if (!FED.signedIn) return;
+  openVaultScreen();
+}
+
 /* ════════════════ boot: a file already open ════════════════ */
 function boot() {
   const params = new URLSearchParams(location.search);
@@ -1629,6 +2058,9 @@ function boot() {
   renderSidebar();
   openFile(S.current || sidebarOrder()[0], {});
   updateChrome();
+  refreshAccount().then(() => {
+    if (params.has("signed-in")) offerVaultAfterSignIn();
+  });
   if (params.has("release")) {
     // ?release=<slug> opens the release screen directly (a shareable
     // view of the one publish screen, and how it is photographed).
@@ -1776,6 +2208,19 @@ async function runSelfTest() {
   check("wordpress: the connection section is on the release screen",
     !!document.getElementById("wpSite") && !!document.getElementById("wpUser")
     && !!document.getElementById("wpPassword") && !!document.getElementById("wpSave"));
+  // Federation: the affordance is present, and the sync
+  // classifier agrees with the server's planning table.
+  check("fed: the sign-in affordance is in the chrome", !!document.getElementById("accountBtn"));
+  check("fed: classifier — only local moved writes",
+    syncClass({ hash: "b", base_rev: 1, base_hash: "a" }, { rev: 1, sha256: "a" }) === "write");
+  check("fed: classifier — only the vault moved is vault-newer",
+    syncClass({ hash: "a", base_rev: 1, base_hash: "a" }, { rev: 2, sha256: "c" }) === "vault-newer");
+  check("fed: classifier — both moved conflicts",
+    syncClass({ hash: "b", base_rev: 1, base_hash: "a" }, { rev: 2, sha256: "c" }) === "conflict");
+  check("fed: classifier — agreement skips",
+    syncClass({ hash: "a", base_rev: 1, base_hash: "x" }, { rev: 3, sha256: "a" }) === "skip");
+  check("fed: classifier — a first sight writes",
+    syncClass({ hash: "a", base_rev: 0, base_hash: "" }, null) === "write");
   const pass = lines.every(l => l.startsWith("PASS"));
   document.title = pass ? "SELFTEST PASS" : "SELFTEST FAIL";
   document.body.innerHTML = `<pre id="selftest-out">${lines.join("\n")}</pre>`;

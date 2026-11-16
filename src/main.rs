@@ -14,6 +14,7 @@
 //! Usage: markdown-wizard [--dir <data-dir>] [--port 8090] [--host 127.0.0.1]
 
 mod bundle;
+mod fed;
 mod http;
 mod mcp;
 mod outputs;
@@ -116,6 +117,21 @@ fn main() {
         }
     };
     let wp = Arc::new(WpStore::new(cfg.dir.clone()));
+    // Federation state (the OAuth client registration, sessions,
+    // and the provider tokens behind them) lives beside the
+    // bundles. State that will not open degrades the deployment
+    // to local-only rather than taking the editor down with it.
+    let fed_config = fed::FedConfig::from_env();
+    let fed = match fed::Fed::open(&cfg.dir, fed_config) {
+        Ok(f) => Arc::new(f),
+        Err(e) => {
+            eprintln!(
+                "markdown-wizard: federation state unavailable ({e}); continuing local-only"
+            );
+            let off = fed::FedConfig { enabled: false, ..fed::FedConfig::from_env() };
+            Arc::new(fed::Fed::open(&cfg.dir, off).expect("disabled federation state"))
+        }
+    };
     let listener = TcpListener::bind(format!("{}:{}", cfg.host, cfg.port)).unwrap_or_else(|e| {
         eprintln!("markdown-wizard: cannot bind {}:{}: {e}", cfg.host, cfg.port);
         std::process::exit(1);
@@ -128,16 +144,23 @@ fn main() {
         store.count(),
         cfg.dir.display()
     );
+    if fed.enabled() {
+        println!(
+            "markdown-wizard federation: sign-in via {} enabled",
+            fed.issuer()
+        );
+    }
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let store = store.clone();
                 let work = work.clone();
                 let wp = wp.clone();
+                let fed = fed.clone();
                 std::thread::spawn(move || {
                     let mut stream = stream;
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-                    handle(&mut stream, &store, &work, &wp);
+                    handle(&mut stream, &store, &work, &wp, &fed);
                 });
             }
             Err(_) => continue,
@@ -156,7 +179,13 @@ fn public_base(headers: &HashMap<String, String>) -> String {
     format!("{scheme}://{host}")
 }
 
-fn handle(stream: &mut TcpStream, store: &Arc<Store>, work: &Arc<WorkStore>, wp: &Arc<WpStore>) {
+fn handle(
+    stream: &mut TcpStream,
+    store: &Arc<Store>,
+    work: &Arc<WorkStore>,
+    wp: &Arc<WpStore>,
+    fed: &Arc<fed::Fed>,
+) {
     let cloned = match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
@@ -222,6 +251,22 @@ fn handle(stream: &mut TcpStream, store: &Arc<Store>, work: &Arc<WorkStore>, wp:
         ("POST", "/mcp" | "/mcp/") | ("GET" | "HEAD", "/mcp" | "/mcp/") => {
             mcp::handle_mcp(stream, &mut reader, &method, &headers, store, work, wp)
         }
+        // Federation via edit.phext.io (see fed.rs): the browser
+        // flow, the session's own endpoints, and the vault sync.
+        ("GET", "/auth/login") => fed.handle_login(stream, &headers, &public_base(&headers)),
+        ("GET", "/auth/callback") => fed.handle_callback(stream, &headers, &target),
+        ("POST", "/auth/logout") => fed.handle_logout(stream, &headers),
+        ("GET" | "HEAD", "/api/me") => fed.handle_me(stream, &headers, head_only),
+        ("GET" | "HEAD", "/api/vault") => fed.handle_vault_status(stream, &headers, head_only),
+        ("POST", "/api/vault/new") => fed.handle_vault_new(stream, &mut reader, &headers),
+        ("POST", "/api/vault/choose") => {
+            fed.handle_vault_choose(stream, &mut reader, &headers)
+        }
+        ("GET" | "HEAD", "/api/vault/starter") => {
+            fed.handle_vault_starter(stream, &headers, head_only)
+        }
+        ("POST", "/api/vault/sync") => fed.handle_vault_sync(stream, &mut reader, &headers),
+        ("POST", "/api/vault/pull") => fed.handle_vault_pull(stream, &mut reader, &headers),
         ("GET" | "HEAD", p) if p.starts_with("/api/bundles/") => {
             let slug = &p["/api/bundles/".len()..];
             match store.get(slug) {
