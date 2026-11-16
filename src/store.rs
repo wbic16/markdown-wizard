@@ -42,6 +42,9 @@
 //!   <slug>/prev/bundle.zip   the previous published version
 //!   <slug>/prev/meta.txt     its meta, its own version and date
 //!   <slug>/work/…            the MCP working copy (see work.rs)
+//!   <slug>/site/…            the derived outputs (see outputs.rs):
+//!                            the pre-rendered static tree, its PDFs,
+//!                            and deploy.zip — rebuilt at every commit
 //! A directory whose bundle.zip fails to parse at load is skipped as
 //! uncommitted.
 
@@ -179,10 +182,24 @@ impl Store {
                 }
             }
         }
-        Ok(Store {
+        let store = Store {
             dir,
             bundles: RwLock::new(map),
-        })
+        };
+        // Derived outputs are a cache of the committed state: any
+        // bundle whose outputs are missing or visibly incomplete
+        // (published before they existed, lost to a crash
+        // mid-generation, or published while no Chromium existed
+        // to print its PDFs) acquires them now, from its own
+        // committed bytes.
+        for bundle in store.list() {
+            if crate::outputs::outputs_incomplete(&store.dir, &bundle) {
+                if let Err(e) = crate::outputs::generate(&store.dir, &bundle) {
+                    eprintln!("markdown-wizard: outputs for {} failed: {e}", bundle.slug);
+                }
+            }
+        }
+        Ok(store)
     }
 
     pub fn get(&self, slug: &str) -> Option<Arc<Bundle>> {
@@ -408,7 +425,26 @@ impl Store {
             .write()
             .unwrap()
             .insert(slug.to_string(), bundle.clone());
+
+        // The derived outputs follow the commit: the pre-rendered
+        // pages, the PDFs, and the static-site download are rebuilt
+        // from the bundle just committed and swapped in beside it.
+        // They are a cache of the committed state, so a failure here
+        // is logged, never fatal — the commit has already landed,
+        // and Store::open rebuilds whatever is missing.
+        if let Err(e) = crate::outputs::generate(&self.dir, bundle) {
+            eprintln!("markdown-wizard: outputs for {slug} failed: {e}");
+        }
         Ok(())
+    }
+
+    /// One file of a bundle's derived outputs (see outputs.rs), read
+    /// from `<slug>/site/`. `rel` must be a path the caller has
+    /// already validated as bundle-shaped (no `..`, no vault) — the
+    /// outputs routes only ever pass the request path itself, after
+    /// the same checks the bundle routes apply.
+    pub fn site_file(&self, slug: &str, rel: &str) -> Option<Vec<u8>> {
+        fs::read(self.dir.join(slug).join("site").join(rel)).ok()
     }
 }
 

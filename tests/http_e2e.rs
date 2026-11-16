@@ -353,6 +353,147 @@ fn feed_dates_follow_each_file_not_the_release() {
     );
 }
 
+/// The `<article>…</article>` heart of a rendered page.
+fn article_of(html: &str) -> String {
+    let start = html.find("<article>").expect("page has an article") + "<article>".len();
+    let end = html[start..].find("</article>").expect("article closes") + start;
+    html[start..end].to_string()
+}
+
+/// The derived outputs come with the publish: a pre-rendered page
+/// and a PDF at each file's `.html` / `.pdf` address, and the whole
+/// bundle as a deployable static site at `site.zip` — all rebuilt
+/// on re-publish and on restore, the vault in none of them.
+#[test]
+fn outputs_come_with_the_publish() {
+    let srv = start_server();
+    let zip1 = make_zip(&[
+        ("index.md", INDEX_V1),
+        ("about.md", ABOUT),
+        ("essays/one.md", "# One\n\nFirst version.\n"),
+        ("vault/secret.md", "# Hidden\n\nNever served.\n"),
+    ]);
+    let r = publish(srv.port, "test-bundle", &zip1, None, Some("First release"));
+    assert_eq!(r.status, 201, "first publish: {}", String::from_utf8_lossy(&r.body));
+    let key = json_str(&r.body, "edit_key").expect("first publish returns the key");
+
+    // The pre-rendered page is the reading view's own rendering,
+    // served as a static file.
+    let page = get(srv.port, "/b/test-bundle/essays/one.html");
+    assert_eq!(page.status, 200);
+    let page_text = String::from_utf8_lossy(&page.body).into_owned();
+    let view = get(srv.port, "/b/test-bundle/essays/one");
+    let view_text = String::from_utf8_lossy(&view.body).into_owned();
+    assert_eq!(
+        article_of(&page_text),
+        article_of(&view_text),
+        "the .html page's article is the reading view's rendering"
+    );
+    assert!(page_text.contains("Version 1 · (Your Version)"), "{page_text}");
+
+    // The PDF is a real PDF when this host has a Chromium to print
+    // with — and the plainly-worded unavailable page when it has
+    // not. Both are designed states; anything else is a failure.
+    let pdf = get(srv.port, "/b/test-bundle/essays/one.pdf");
+    let pdf_available = if pdf.status == 200 {
+        assert!(pdf.body.starts_with(b"%PDF-"), "the .pdf address serves PDF bytes");
+        assert!(pdf.body.len() > 1000, "the PDF is a real printed page, not a stub");
+        assert!(
+            pdf.headers.to_lowercase().contains("application/pdf"),
+            "pdf content type: {}",
+            pdf.headers
+        );
+        true
+    } else {
+        assert_eq!(pdf.status, 404, "pdf answered {}", pdf.status);
+        let text = String::from_utf8_lossy(&pdf.body).into_owned();
+        assert!(text.contains("no Chromium"), "the unavailable page says why: {text}");
+        false
+    };
+
+    // The static site: the whole tree in one zip, links rewritten
+    // to live inside it.
+    let site = get(srv.port, "/b/test-bundle/site.zip");
+    assert_eq!(site.status, 200);
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(site.body)).unwrap();
+    let mut names: Vec<String> = archive.file_names().map(|n| n.to_string()).collect();
+    names.sort();
+    for expected in [
+        "index.html",
+        "about.html",
+        "essays/one.html",
+        "index.md",
+        "about.md",
+        "essays/one.md",
+        "feed.xml",
+        "bundle.zip",
+        "README.txt",
+        "favicon.svg",
+        "favicon.png",
+        "mascot-badge.webp",
+    ] {
+        assert!(names.iter().any(|n| n == expected), "site.zip lacks {expected}: {names:?}");
+    }
+    if pdf_available {
+        assert!(names.iter().any(|n| n == "essays/one.pdf"), "site.zip lacks the PDF: {names:?}");
+    }
+    assert!(
+        !names.iter().any(|n| n.starts_with("vault/")),
+        "the vault is in the site download: {names:?}"
+    );
+    // The source archive rides inside, byte for byte.
+    let mut inner = String::new();
+    {
+        let mut entry = archive.by_name("bundle.zip").unwrap();
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+        assert_eq!(bytes, zip1, "bundle.zip inside the site is the published zip");
+    }
+    // The exported index links resolve inside the tree: relative,
+    // and at the tree's own addresses.
+    {
+        let mut entry = archive.by_name("index.html").unwrap();
+        std::io::Read::read_to_string(&mut entry, &mut inner).unwrap();
+    }
+    assert!(inner.contains("href=\"essays/one.html\""), "export tracklist: {inner}");
+    assert!(inner.contains("href=\"bundle.zip\""), "export colophon: {inner}");
+    assert!(inner.contains("href=\"feed.xml\""), "export feed link: {inner}");
+    assert!(!inner.contains("href=\"/b/"), "an absolute bundle link survived the rewrite: {inner}");
+    assert!(!inner.contains("site.zip"), "the deploy link names itself in the export: {inner}");
+    assert!(!inner.contains("secret"), "the export index lists the vault: {inner}");
+
+    // The vault has no outputs either.
+    assert_eq!(get(srv.port, "/b/test-bundle/vault/secret.html").status, 404);
+    assert_eq!(get(srv.port, "/b/test-bundle/vault/secret.pdf").status, 404);
+
+    // Re-publish rebuilds the outputs at the same addresses.
+    let zip2 = make_zip(&[
+        ("index.md", INDEX_V1),
+        ("about.md", ABOUT),
+        ("essays/one.md", "# One\n\nSecond version.\n"),
+    ]);
+    let r2 = publish(srv.port, "test-bundle", &zip2, Some(&key), Some("Second release"));
+    assert_eq!(r2.status, 200);
+    let page2 = get(srv.port, "/b/test-bundle/essays/one.html");
+    let page2_text = String::from_utf8_lossy(&page2.body).into_owned();
+    assert!(page2_text.contains("Second version."), "{page2_text}");
+    assert!(page2_text.contains("Version 2 · (Your Version)"), "{page2_text}");
+
+    // And a restore rebuilds them back — outputs follow the commit
+    // in both directions.
+    let rr = request(
+        srv.port,
+        "POST",
+        "/api/restore",
+        &[("X-Slug", "test-bundle".to_string()), ("X-Edit-Key", key.clone())],
+        &[],
+    );
+    assert_eq!(rr.status, 200);
+    let page3 = get(srv.port, "/b/test-bundle/essays/one.html");
+    let page3_text = String::from_utf8_lossy(&page3.body).into_owned();
+    assert!(page3_text.contains("First version."), "{page3_text}");
+}
+
 #[test]
 fn invalid_bundles_are_refused_whole() {
     let srv = start_server();

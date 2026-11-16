@@ -31,6 +31,8 @@ ureq = "2"
 [dev-dependencies]
 tempfile = "3"
 serde_json = "1"
+# The outputs tests open the static-site download and read its tree.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [[bin]]
 name = "markdown-wizard"

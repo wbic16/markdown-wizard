@@ -111,7 +111,55 @@ grep -q "mascot-badge" "$WORK/index.html" || fail "bundle index lacks the keeper
 grep -q "mascot-badge" "$WORK/view.html" && fail "a reading page carries the keeper"
 curl -sf "$BASE/" | grep -q "mascot-badge" || fail "editor brand lacks the keeper"
 note "the keeper: badge and favicon serve; index and editor wear it; reading pages stay clean"
-
+# ——— the derived outputs: pre-rendered page, PDF, static site ———
+curl -sf "$BASE/b/e2e-bundle/essays/one.html" > "$WORK/one-static.html"
+python3 - "$WORK/view.html" "$WORK/one-static.html" <<'PYEOF' || fail "the .html page is not the reading view's rendering"
+import re, sys
+def article(p):
+    t = open(p).read()
+    m = re.search(r"<article>\n?(.*?)</article>", t, re.S)
+    assert m, f"no article in {p}"
+    return m.group(1)
+assert article(sys.argv[1]) == article(sys.argv[2]), "articles differ"
+PYEOF
+note "pre-rendered .html carries the reading view's own article"
+if [ -x "$CHROME_BIN" ]; then
+  curl -sf "$BASE/b/e2e-bundle/essays/one.pdf" > "$WORK/one.pdf" || fail "PDF address failed though a Chromium exists"
+  [ "$(head -c 5 "$WORK/one.pdf")" = "%PDF-" ] || fail "the .pdf address does not serve PDF bytes"
+  [ "$(wc -c < "$WORK/one.pdf")" -gt 1000 ] || fail "the PDF is a stub"
+  note "PDF printed at publish time, real bytes"
+else
+  CODE=$(curl -s -o "$WORK/nopdf.html" -w '%{http_code}' "$BASE/b/e2e-bundle/essays/one.pdf")
+  [ "$CODE" = "404" ] && grep -q "no Chromium" "$WORK/nopdf.html" || fail "no Chromium, but the .pdf address did not say so plainly"
+  note "no Chromium here — the .pdf address degrades to the unavailable page, as designed"
+fi
+curl -sf "$BASE/b/e2e-bundle/site.zip" > "$WORK/site.zip"
+python3 - "$WORK/site.zip" "$WORK/bundle-v1.zip" <<'PYEOF' || fail "the static site download is wrong"
+import sys, zipfile, posixpath
+z = zipfile.ZipFile(sys.argv[1])
+names = set(z.namelist())
+for expected in ["index.html", "about.html", "essays/one.html", "index.md",
+                 "about.md", "essays/one.md", "feed.xml", "bundle.zip",
+                 "README.txt", "favicon.svg", "favicon.png", "mascot-badge.webp"]:
+    assert expected in names, f"site.zip lacks {expected}: {sorted(names)}"
+assert not any(n.startswith("vault/") for n in names), f"vault in the site: {sorted(names)}"
+assert z.read("bundle.zip") == open(sys.argv[2], "rb").read(), "bundle.zip inside differs"
+import re
+def check_links(page):
+    html = z.read(page).decode("utf-8")
+    base = posixpath.dirname(page)
+    for href in re.findall(r'(?:href|src)="([^"]+)"', html):
+        if href.startswith(("#", "mailto:", "data:")) or "://" in href:
+            continue
+        target = href.split("#")[0].split("?")[0]
+        if not target:
+            continue
+        resolved = posixpath.normpath(posixpath.join(base, target))
+        assert resolved in names, f"{page}: link {href} -> {resolved} not in the tree"
+check_links("index.html")
+check_links("essays/one.html")
+PYEOF
+note "static site: full tree, source zip inside, every internal link resolves in the tree"
 # ——— wrong key, then the right one ———
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/publish" -H "X-Slug: e2e-bundle" \
   -H "X-Edit-Key: not-the-key" --data-binary @"$WORK/bundle-v2.zip")
@@ -124,6 +172,8 @@ URL2=$(printf '%s' "$RESP2" | python3 -c "import json,sys; print(json.load(sys.s
 [ "$V2" = "2" ] || fail "re-publish version is $V2, not 2"
 [ "$URL2" = "/b/e2e-bundle/" ] || fail "re-publish moved the URL: $URL2"
 curl -sf "$BASE/b/e2e-bundle/essays/one.md" | grep -q "Second version." || fail "re-publish did not swap the content"
+curl -sf "$BASE/b/e2e-bundle/essays/one.html" | grep -q "Second version." || fail "re-publish did not rebuild the pre-rendered page"
+curl -sf "$BASE/b/e2e-bundle/essays/one.html" | grep -q "Version 2 · (Your Version)" || fail "the rebuilt page lacks the new version line"
 note "wrong key refused; re-publish swapped the bundle at the same URL, version 2"
 
 # ——— restore, both ways ———

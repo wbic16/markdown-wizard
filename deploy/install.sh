@@ -40,6 +40,20 @@ command -v cargo > /dev/null || { echo "cargo not found on this host; install Ru
 echo "-- cargo build --release"
 (cd "$SRC" && cargo build --release)
 
+# 2b. PDF output is printed by a headless Chromium (see DEPLOY.md).
+#     Absent one, the service still runs whole — bundles simply
+#     have no PDFs, and each .pdf address says so. Warn, never fail.
+CHROME_FOUND=""
+for c in chromium chromium-browser google-chrome google-chrome-stable chrome-headless-shell; do
+  if command -v "$c" > /dev/null; then CHROME_FOUND="$c"; break; fi
+done
+if [ -n "$CHROME_FOUND" ]; then
+  echo "-- chromium for PDF output: $CHROME_FOUND"
+else
+  echo "!! no Chromium found — PDF output will be unavailable until one is installed" >&2
+  echo "!! (e.g. apt install chromium); everything else works without it" >&2
+fi
+
 # 3. Data directory: bundles live here, one directory per slug.
 echo "-- data dir $DATA"
 $SUDO mkdir -p "$DATA"

@@ -16,6 +16,7 @@
 mod bundle;
 mod http;
 mod mcp;
+mod outputs;
 mod render;
 mod rss;
 mod store;
@@ -623,6 +624,27 @@ fn handle_bundle_path(
         http::send_response(stream, 200, "application/rss+xml; charset=utf-8", feed.as_bytes(), CacheClass::Shell, headers, head_only);
         return;
     }
+    // The static site, to take away and host anywhere: the whole
+    // bundle pre-rendered — pages, PDFs, sources, feed — as one zip
+    // (built at publish time; see outputs.rs).
+    if sub == "site.zip" {
+        if let Some(bytes) = store.site_file(slug, "deploy.zip") {
+            let extra = format!(
+                "Content-Disposition: attachment; filename=\"{slug}-site.zip\"\r\n"
+            );
+            http::send_response_extra(
+                stream,
+                200,
+                "application/zip",
+                &bytes,
+                CacheClass::Shell,
+                headers,
+                head_only,
+                &extra,
+            );
+            return;
+        }
+    }
     // The vault is private by structure: it is never served.
     if is_vault_path(&sub) || !valid_bundle_path(&sub) {
         let page = render::not_found_page(path);
@@ -641,6 +663,48 @@ fn handle_bundle_path(
         http::send_response(stream, 200, content_type_for(&sub), &f.bytes, CacheClass::Shell, headers, head_only);
         return;
     }
+    // The pre-rendered page: the reading view as a static file,
+    // rendered at publish time (see outputs.rs). A carried file at
+    // this exact address was already served above — it wins, here
+    // as everywhere.
+    if sub.ends_with(".html") {
+        let stem = &sub[..sub.len() - ".html".len()];
+        if let Some(f) = markdown_file_for_stem(&bundle, stem) {
+            if let Some(bytes) = store.site_file(slug, &sub) {
+                http::send_response(stream, 200, HTML, &bytes, CacheClass::Shell, headers, head_only);
+                return;
+            }
+            // The cached page is missing (its generation failed,
+            // and was logged): the reading view, rendered now, is
+            // the same page — serve it rather than nothing.
+            let page = render::reading_page(&bundle, f);
+            http::send_response(stream, 200, HTML, page.as_bytes(), CacheClass::Shell, headers, head_only);
+            return;
+        }
+    }
+    // The printed page: the same rendering as a PDF, printed at
+    // publish time and cached with the snapshot. When this server
+    // has no Chromium to print with, the address answers with a
+    // page that says so.
+    if sub.ends_with(".pdf") {
+        let stem = &sub[..sub.len() - ".pdf".len()];
+        if let Some(f) = markdown_file_for_stem(&bundle, stem) {
+            if let Some(bytes) = store.site_file(slug, &sub) {
+                http::send_response(stream, 200, "application/pdf", &bytes, CacheClass::Shell, headers, head_only);
+                return;
+            }
+            let page = render::pdf_unavailable_page(&bundle, f);
+            http::send_response(stream, 404, HTML, page.as_bytes(), CacheClass::NoStore, headers, head_only);
+            return;
+        }
+    }
+    // The site's favicon, for the relative favicon links the
+    // pre-rendered pages carry. (A bundle's own favicon.svg was
+    // served above, as a carried file — it keeps its address.)
+    if sub == "favicon.svg" {
+        http::send_response(stream, 200, "image/svg+xml", FAVICON_SVG.as_bytes(), CacheClass::Static, headers, head_only);
+        return;
+    }
     // The reading view: the same address without the extension.
     for ext in [".md", ".markdown"] {
         let candidate = format!("{sub}{ext}");
@@ -652,6 +716,16 @@ fn handle_bundle_path(
     }
     let page = render::not_found_page(path);
     http::send_response(stream, 404, HTML, page.as_bytes(), CacheClass::NoStore, headers, head_only);
+}
+
+/// The markdown file a stem names (`essays/one` → `essays/one.md`).
+fn markdown_file_for_stem<'a>(bundle: &'a store::Bundle, stem: &str) -> Option<&'a bundle::BundleFile> {
+    for ext in [".md", ".markdown"] {
+        if let Some(f) = bundle.parsed.file(&format!("{stem}{ext}")) {
+            return Some(f);
+        }
+    }
+    None
 }
 
 fn content_type_for(path: &str) -> &'static str {

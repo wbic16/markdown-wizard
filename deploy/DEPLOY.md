@@ -21,8 +21,10 @@ never handles a password itself.
    phext-edit is built there. The binary lands at
    `/source/markdown-wizard/target/release/markdown-wizard`.
 3. **Data** — creates `/source/markdown-wizard-data`. One directory
-   per published slug lives here (`bundle.zip`, `meta.txt`, `prev/`);
-   nothing else writes to it.
+   per published slug lives here (`bundle.zip`, `meta.txt`, `prev/`,
+   and `site/` — the derived outputs: pre-rendered pages, PDFs, and
+   the static-site download, rebuilt at every publish); nothing else
+   writes to it.
 4. **Service** — installs `deploy/markdown-wizard.service`, enables
    and restarts it, and waits for `GET /api/status` on
    `127.0.0.1:8090` (phext-edit holds 8080, the preview 8081; 8090 is
@@ -34,6 +36,23 @@ never handles a password itself.
    tests the config, and reloads.
 6. **Smoke** — `https://md.phext.io/api/status` must answer and the
    editor must load at `https://md.phext.io/`.
+
+## PDF output needs a Chromium
+
+Each published file's PDF is printed at publish time by a headless
+Chromium — the one external tool the service shells out to. The
+server looks for `chromium`, `chromium-browser`, `google-chrome`,
+`google-chrome-stable`, or `chrome-headless-shell` on the PATH
+(the `MARKDOWN_WIZARD_CHROMIUM` environment variable names a
+specific binary, and the Playwright cache under the service user's
+home is checked last). `install.sh` checks after the build and
+warns when none is found; it does not fail the install. Without a
+Chromium the service runs whole — bundles publish, pages render,
+the static site downloads — but there are no PDFs, and each `.pdf`
+address answers with a page saying so. Installing one later (e.g.
+`apt install chromium`) is enough: the next publish prints, and
+bundles already published gain their PDFs at the next server
+start, when missing outputs are rebuilt.
 
 ## Verify afterwards
 

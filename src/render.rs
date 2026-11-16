@@ -311,6 +311,15 @@ footer.colophon .addr { font-family: var(--mono); font-size: 0.78rem; }
 }
 .ways pre code { font-family: var(--mono); }
 .ways-close { margin-top: 2.6rem; }
+@page { margin: 16mm 14mm; }
+@media print {
+  /* The printed page is the page: keep its colours, let the
+     paper's own margins do the framing. This is also the sheet
+     the PDF output is printed from (see outputs.rs) — one
+     rendering, two carriers, so print and PDF cannot diverge. */
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .page { max-width: none; padding: 0; }
+}
 "#;
 
 /// The quiet suggestion — it lives in exactly two places: the
@@ -406,7 +415,10 @@ pub fn index_page(bundle: &Bundle, base: &str) -> String {
          <footer class=\"colophon\"><p>{}</p><p>{QUIET_LINE}</p>\
          <p>Published from a zip of markdown — the bundle is the document, and \
          <a href=\"/b/{slug}.zip\">the zip itself</a> is here to take away.</p>\
-         <p><a href=\"/integrate\">Ways to use it</a> — how a bundle travels: to an LLM, to WordPress, to your own hosting.</p></footer>",
+         <p><a href=\"/integrate\">Ways to use it</a> — how a bundle travels: to an LLM, to WordPress, to your own hosting.</p>\
+         <p>The same bundle as a ready-made static site — every page \
+         pre-rendered, a PDF beside each — \
+         <a href=\"/b/{slug}/site.zip\">travels as one zip</a>, to host anywhere.</p></footer>",
         html_escape(&title),
         version_line(bundle),
     );
@@ -553,6 +565,29 @@ pub fn integrate_page() -> String {
          <footer class=\"colophon\"><p><a href=\"/\">‹ Back to the editor</a></p></footer>"
     );
     shell("Ways to use it — md.phext.io", &body)
+}
+
+/// The PDF address, when this server has no Chromium to print
+/// with: a page that says so plainly, in the same quiet dress, and
+/// points at the page itself — which is whole, and always was the
+/// primary form.
+pub fn pdf_unavailable_page(bundle: &Bundle, file: &BundleFile) -> String {
+    let slug = html_escape(&bundle.slug);
+    let stem = markdown_stem(&file.path).unwrap_or_else(|| file.path.clone());
+    let body = format!(
+        "<p class=\"crumbs\"><a href=\"/b/{slug}/\">‹ {slug}</a></p>\n\
+         <div class=\"title-block\"><p class=\"eyebrow\">PDF</p>\
+         <h1 class=\"display\">The printed page, unprinted.</h1></div>\n\
+         <p class=\"lede\">This server has no Chromium to print with, so {} \
+         has no PDF here. The page itself is whole:</p>\n\
+         <p><a href=\"/b/{slug}/{}\">Read {} in the reading view</a> — \
+         or <a href=\"{}.md\">read the source</a>, the pattern, exactly as written.</p>",
+        html_escape(&file.path),
+        html_escape(&stem),
+        html_escape(&file.path),
+        html_escape(&stem),
+    );
+    shell("PDF unavailable — md.phext.io", &body)
 }
 
 /// The 404 page, in the same quiet dress.

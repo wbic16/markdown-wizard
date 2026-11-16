@@ -104,7 +104,10 @@ public URL rendered large *before* you commit, an optional one-line
 | `/b/<slug>/` | The bundle index: its own `index.md`, rendered, over a numbered tracklist |
 | `/b/<slug>/<path>.md` | The raw markdown itself — the source is the destination |
 | `/b/<slug>/<path>` | The reading view of the same file (extension dropped) |
+| `/b/<slug>/<path>.html` | The same reading view, pre-rendered at publish time as a static page |
+| `/b/<slug>/<path>.pdf` | The same page as a PDF, printed at publish time |
 | `/b/<slug>.zip` | The bundle itself, to take away |
+| `/b/<slug>/site.zip` | The bundle as a ready-made static site, to host anywhere |
 | `/b/<slug>/feed.xml` | The bundle's RSS 2.0 feed, from the published snapshot only |
 | `/b/<slug>/vault/…` | Never served. The vault is private by structure |
 | `POST /mcp` | The MCP endpoint for agent clients (next section) |
@@ -128,7 +131,43 @@ closes with one sentence of kin for [tluf.org](https://tluf.org)
 and is kept by the Pencil Puffball — the house mascot, served at
 `/mascot-badge.webp` and worn once, as a round badge, in the page's
 opening.
+## Outputs
 
+Publishing produces one state — the bundle — and three carriers of
+it, all built at publish time and cached beside the bundle (in
+`<data>/<slug>/site/`), then rebuilt whole at every re-publish and
+every restore:
+
+- **Pre-rendered HTML.** Every markdown file's reading view,
+  rendered once by the one renderer and kept as a static page at
+  its `.html` address. It is the export-shaped page below — its
+  links are relative — served from the same depth as the reading
+  view, so they resolve identically in both homes.
+- **PDF.** The same rendered page, printed to PDF at publish time
+  and cached with the snapshot; a reader's request never triggers
+  a render. Printing is the one job the server hands to an outside
+  tool: a headless Chromium, found on the PATH (or in the
+  Playwright cache, or via the `MARKDOWN_WIZARD_CHROMIUM`
+  environment variable). When no Chromium exists, the publish
+  still lands — the bundle simply has no PDFs, and each `.pdf`
+  address answers with a page that says so. See `deploy/DEPLOY.md`.
+- **The static site.** The whole bundle as a deployable tree, at
+  `/b/<slug>/site.zip`: the bundle index as `index.html`, one
+  `.html` and one `.pdf` per file, the raw `.md` sources at their
+  own paths, every carried file, the feed, the source zip as
+  `bundle.zip`, and a `README.txt` that tells the owner what they
+  are holding. Links inside the exported pages are rewritten to
+  relative paths that resolve inside the tree, so the site works
+  from any static host — an S3 website bucket is the named
+  example — with no markdown-wizard server anywhere in the loop.
+
+The vault is in none of them: it is private by structure, and a
+derived carrier inherits the privacy of its source. Two collision
+rules, both mirroring the live routes: a carried file sitting at a
+page's `.html` or `.pdf` address keeps that address (no generated
+page is written over it), and the site's own furniture —
+`index.html`, `feed.xml`, `favicon.svg`, `bundle.zip`,
+`README.txt` — shadows a carried file of the same name.
 ## Agents (MCP)
 
 An LLM client can write here too. The server speaks the Model
