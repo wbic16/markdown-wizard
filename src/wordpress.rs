@@ -537,6 +537,18 @@ pub fn sync_bundle(wp: &WpStore, bundle: &Bundle, settings: &WpSettings) -> Sync
     report
 }
 
+/// The push that rides a publish — the web release, an MCP
+/// publish, and a restore all ride the same hook. A restore is a
+/// publish of the older state: it changes what is published, and
+/// WordPress follows the published state — the bundle is the
+/// source of truth either way. Runs only when a connection is
+/// saved for the bundle, and never fails the publish it rides:
+/// the sync records its own failures per file.
+pub fn sync_if_configured(wp: &WpStore, bundle: &Bundle) -> Option<SyncReport> {
+    let settings = wp.load_settings(&bundle.slug)?;
+    Some(sync_bundle(wp, bundle, &settings))
+}
+
 /// Push one file: update its mapped post, or create the post when
 /// there is no mapping — or when the mapped post is gone from
 /// WordPress (a 404 on update falls through to create, and the

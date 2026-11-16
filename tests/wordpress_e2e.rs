@@ -12,6 +12,13 @@
 //! leaves the bundle is never deleted on WordPress, only unmapped;
 //! and the application password appears in no response, no download,
 //! and no page.
+//!
+//! The second test drives the same cycle through MCP: an agent's
+//! publish_bundle pushes through the same hook a web publish uses —
+//! posts created on the first connected publish, updated in place
+//! on the next, the report riding the tool result.
+
+use serde_json::{json, Value};
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -551,4 +558,154 @@ fn wordpress_sync_cycle() {
     let plain = save_settings(srv.port, "wp-bundle", &key, "http://example.com");
     assert_eq!(plain.status, 422);
     assert!(body_text(&plain.body).contains("https"), "{}", body_text(&plain.body));
+}
+
+// ——— the MCP leg: an agent's publish pushes too ———
+
+/// One MCP tools/call against the real server; returns the tool
+/// result's payload (its text content, parsed back from JSON).
+fn mcp_call(port: u16, id: u64, name: &str, args: Value) -> Value {
+    let req = json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": args}});
+    let body = serde_json::to_vec(&req).unwrap();
+    let r = request(
+        port,
+        "POST",
+        "/mcp",
+        &[("Content-Type", "application/json".to_string())],
+        &body,
+    );
+    assert_eq!(r.status, 200, "tools/call {name}: {}", body_text(&r.body));
+    let resp: Value = serde_json::from_slice(&r.body).unwrap();
+    let result = &resp["result"];
+    assert_eq!(result["isError"], json!(false), "tool {name} errored: {result}");
+    let text = result["content"][0]["text"].as_str().expect("text content");
+    serde_json::from_str(text).unwrap_or_else(|_| panic!("tool text is not JSON: {text}"))
+}
+
+/// The recorded outcome for one file in an MCP publish's
+/// wordpress report.
+fn mcp_outcome(payload: &Value, path: &str) -> Option<String> {
+    payload["wordpress"]["results"]
+        .as_array()?
+        .iter()
+        .find(|r| r["path"] == json!(path))
+        .and_then(|r| r["outcome"].as_str().map(str::to_string))
+}
+
+#[test]
+fn mcp_publish_pushes_to_wordpress() {
+    let srv = start_server();
+    let stub = start_stub();
+    let site = format!("http://127.0.0.1:{}", stub.port);
+
+    // The agent writes a bundle into a fresh slug; the first write
+    // mints the key, as it does for a human's first publish.
+    let first = mcp_call(
+        srv.port,
+        1,
+        "write_file",
+        json!({"slug": "mcp-bundle", "path": "index.md", "content": "# Agent Index\n\nFirst agent version.\n"}),
+    );
+    let key = first["edit_key"].as_str().expect("the first write mints the key").to_string();
+    mcp_call(
+        srv.port,
+        2,
+        "write_file",
+        json!({"slug": "mcp-bundle", "path": "about.md", "content": "The agent's short version.\n", "edit_key": key}),
+    );
+    mcp_call(
+        srv.port,
+        3,
+        "write_file",
+        json!({"slug": "mcp-bundle", "path": "vault/secret.md", "content": "# Hidden\n\nNever sent.\n", "edit_key": key}),
+    );
+
+    // Publish with no WordPress connected: no push, no field —
+    // exactly the web path's behavior before a connection exists.
+    let pub1 = mcp_call(
+        srv.port,
+        4,
+        "publish_bundle",
+        json!({"slug": "mcp-bundle", "changed": "Agent release one", "edit_key": key}),
+    );
+    assert_eq!(pub1["version"], json!(1), "{pub1}");
+    assert!(pub1.get("wordpress").is_none(), "no sync before a connection exists: {pub1}");
+    assert!(stub.stub.log.lock().unwrap().is_empty(), "the stub heard nothing");
+
+    // Connect the stub site (the settings endpoint is the web one;
+    // the key the agent minted opens it).
+    let saved = save_settings(srv.port, "mcp-bundle", &key, &site);
+    assert_eq!(saved.status, 200, "{}", body_text(&saved.body));
+
+    // The agent edits and re-publishes over MCP: the push rides
+    // this publish too. Every publishable file becomes a post; the
+    // vault file is not one of them.
+    mcp_call(
+        srv.port,
+        5,
+        "write_file",
+        json!({"slug": "mcp-bundle", "path": "index.md", "content": "# Agent Index\n\nSecond agent version.\n", "edit_key": key}),
+    );
+    let pub2 = mcp_call(
+        srv.port,
+        6,
+        "publish_bundle",
+        json!({"slug": "mcp-bundle", "changed": "Agent release two", "edit_key": key}),
+    );
+    assert_eq!(pub2["version"], json!(2), "{pub2}");
+    assert_eq!(pub2["wordpress"]["site"], json!(site), "the report names the site: {pub2}");
+    for path in ["index.md", "about.md"] {
+        assert_eq!(mcp_outcome(&pub2, path).as_deref(), Some("created"), "{path}: {pub2}");
+    }
+    assert!(
+        mcp_outcome(&pub2, "vault/secret.md").is_none(),
+        "the vault is never synced: {pub2}"
+    );
+    {
+        let posts = stub.stub.posts.lock().unwrap();
+        assert_eq!(posts.len(), 2, "two posts created by the MCP publish");
+        assert!(
+            posts.values().any(|b| b.contains("Second agent version.")),
+            "the rendered HTML of the agent's edit was pushed"
+        );
+    }
+
+    // The report is persisted with the bundle, the same as a web
+    // publish's: the settings read-back carries it as last_sync.
+    let read_back = get(
+        srv.port,
+        "/api/wordpress/mcp-bundle",
+        &[("X-Edit-Key", key.clone())],
+    );
+    assert_eq!(read_back.status, 200);
+    let back = body_text(&read_back.body);
+    assert!(back.contains("\"mapped_posts\":2"), "the mapping persisted: {back}");
+    assert!(back.contains("\"last_sync\":{"), "the report persisted: {back}");
+    assert!(back.contains("\"outcome\":\"created\""), "with its outcomes: {back}");
+
+    // A third MCP publish updates the same posts in place.
+    mcp_call(
+        srv.port,
+        7,
+        "write_file",
+        json!({"slug": "mcp-bundle", "path": "about.md", "content": "The agent's short version, revised.\n", "edit_key": key}),
+    );
+    let pub3 = mcp_call(
+        srv.port,
+        8,
+        "publish_bundle",
+        json!({"slug": "mcp-bundle", "changed": "Agent release three", "edit_key": key}),
+    );
+    assert_eq!(pub3["version"], json!(3), "{pub3}");
+    for path in ["index.md", "about.md"] {
+        assert_eq!(mcp_outcome(&pub3, path).as_deref(), Some("updated"), "{path}: {pub3}");
+    }
+    {
+        let posts = stub.stub.posts.lock().unwrap();
+        assert_eq!(posts.len(), 2, "still two posts — updates, not duplicates");
+        assert!(
+            posts.values().any(|b| b.contains("revised")),
+            "the update carried the agent's new text"
+        );
+    }
 }

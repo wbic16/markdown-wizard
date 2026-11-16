@@ -219,7 +219,7 @@ fn handle(stream: &mut TcpStream, store: &Arc<Store>, work: &Arc<WorkStore>, wp:
         // The MCP endpoint: POST is the whole transport; any other
         // method is answered inside, as a JSON 405 (see mcp.rs).
         ("POST", "/mcp" | "/mcp/") | ("GET" | "HEAD", "/mcp" | "/mcp/") => {
-            mcp::handle_mcp(stream, &mut reader, &method, &headers, store, work)
+            mcp::handle_mcp(stream, &mut reader, &method, &headers, store, work, wp)
         }
         ("GET" | "HEAD", p) if p.starts_with("/api/bundles/") => {
             let slug = &p["/api/bundles/".len()..];
@@ -290,12 +290,12 @@ fn handle_publish(
         .and_then(|s| store::clean_changed_line(s));
     match store.publish(&slug, body, key, changed) {
         Ok(PublishOutcome::Created { bundle, edit_key }) => {
-            let report = sync_if_configured(wp, &bundle);
+            let report = wordpress::sync_if_configured(wp, &bundle);
             let body = publish_json(&bundle, Some(&edit_key), report.as_ref());
             http::send_response(stream, 201, JSON, body.as_bytes(), CacheClass::NoStore, headers, false)
         }
         Ok(PublishOutcome::Replaced { bundle }) => {
-            let report = sync_if_configured(wp, &bundle);
+            let report = wordpress::sync_if_configured(wp, &bundle);
             let body = publish_json(&bundle, None, report.as_ref());
             http::send_response(stream, 200, JSON, body.as_bytes(), CacheClass::NoStore, headers, false)
         }
@@ -324,7 +324,7 @@ fn handle_restore(
     let key = headers.get("x-edit-key").map(|s| s.as_str());
     match store.restore(&slug, key) {
         Ok(bundle) => {
-            let report = sync_if_configured(wp, &bundle);
+            let report = wordpress::sync_if_configured(wp, &bundle);
             let body = publish_json(&bundle, None, report.as_ref());
             http::send_response(stream, 200, JSON, body.as_bytes(), CacheClass::NoStore, headers, false)
         }
@@ -368,16 +368,6 @@ fn publish_json(
 }
 
 // ——— WordPress ———
-
-/// The push that rides a publish. A restore rides it too: a restore
-/// changes what is published, and WordPress follows the published
-/// state — the bundle is the source of truth either way. Runs only
-/// when a connection is saved for the bundle, and never fails the
-/// publish it rides: the sync records its own failures per file.
-fn sync_if_configured(wp: &WpStore, bundle: &store::Bundle) -> Option<wordpress::SyncReport> {
-    let settings = wp.load_settings(&bundle.slug)?;
-    Some(wordpress::sync_bundle(wp, bundle, &settings))
-}
 
 /// The bundle, when the supplied key opens it — the same check
 /// publish and restore run, shared by the WordPress endpoints.

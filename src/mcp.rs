@@ -29,8 +29,11 @@
 //! durably (see work.rs). `publish_bundle` then commits the whole
 //! draft through the store's own publish path: the same gate, the
 //! same atomic swap, the same version increment as a web release.
-//! An agent's edits and a human's edits meet only at that commit
-//! point, never in a half-published state.
+//! The WordPress push rides that commit too, through the same hook
+//! the web release uses: after the commit lands, never failing it,
+//! its per-file report persisted with the bundle and carried in the
+//! publish result. An agent's edits and a human's edits meet only
+//! at that commit point, never in a half-published state.
 
 use std::collections::HashMap;
 use std::io::BufReader;
@@ -44,6 +47,7 @@ use crate::bundle::{
 };
 use crate::http::{self, CacheClass};
 use crate::store::{clean_changed_line, Store};
+use crate::wordpress::WpStore;
 use crate::work::{diverged, WorkError, WorkStore, WorkingCopy};
 
 const MCP_PROTOCOL_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
@@ -62,6 +66,7 @@ pub fn handle_mcp(
     headers: &HashMap<String, String>,
     store: &Arc<Store>,
     work: &Arc<WorkStore>,
+    wp: &Arc<WpStore>,
 ) {
     // Stateless: there is no server-initiated stream for a GET to
     // open and no transport session for a DELETE to close. A
@@ -105,7 +110,7 @@ pub fn handle_mcp(
     if let Value::Array(items) = &value {
         let replies: Vec<Value> = items
             .iter()
-            .filter_map(|item| dispatch(store, work, item, http_key))
+            .filter_map(|item| dispatch(store, work, wp, item, http_key))
             .collect();
         if replies.is_empty() {
             http::send_response(stream, 202, http::JSON, b"", CacheClass::NoStore, headers, false);
@@ -115,7 +120,7 @@ pub fn handle_mcp(
         }
         return;
     }
-    match dispatch(store, work, &value, http_key) {
+    match dispatch(store, work, wp, &value, http_key) {
         Some(reply) => {
             let out = serde_json::to_string(&reply).unwrap_or_else(|_| "{}".into());
             send_json(stream, headers, 200, &out);
@@ -135,6 +140,7 @@ fn send_json(stream: &mut TcpStream, headers: &HashMap<String, String>, status: 
 fn dispatch(
     store: &Arc<Store>,
     work: &Arc<WorkStore>,
+    wp: &Arc<WpStore>,
     req: &Value,
     http_key: Option<&str>,
 ) -> Option<Value> {
@@ -151,7 +157,7 @@ fn dispatch(
         "initialize" => Ok(initialize(&params)),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tools() })),
-        "tools/call" => Ok(call_tool(store, work, &params, http_key)),
+        "tools/call" => Ok(call_tool(store, work, wp, &params, http_key)),
         _ => Err((-32601, format!("method not found: {method}"))),
     };
     Some(match outcome {
@@ -266,7 +272,7 @@ fn tools() -> Value {
         },
         {
             "name": "publish_bundle",
-            "description": "Commit the slug's working copy atomically — the same publish as the web release: version increments, the URL never changes, the previous version is kept for restore. Refuses when the published bundle has moved past the draft's base version. Requires the edit key.",
+            "description": "Commit the slug's working copy atomically — the same publish as the web release: version increments, the URL never changes, the previous version is kept for restore. Refuses when the published bundle has moved past the draft's base version. Requires the edit key. If the bundle is connected to a WordPress site, the release is pushed there too and the per-file sync report rides the result as a wordpress field.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -283,6 +289,7 @@ fn tools() -> Value {
 fn call_tool(
     store: &Arc<Store>,
     work: &Arc<WorkStore>,
+    wp: &Arc<WpStore>,
     params: &Value,
     http_key: Option<&str>,
 ) -> Value {
@@ -297,7 +304,7 @@ fn call_tool(
     // A tool must answer, never panic: a refusal is an isError
     // result, and so is an internal failure.
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_tool(store, work, name, &args, key)
+        run_tool(store, work, wp, name, &args, key)
     }));
     match ran {
         Ok(Ok(value)) => {
@@ -331,6 +338,7 @@ fn arg_bool(args: &Value, key: &str) -> bool {
 fn run_tool(
     store: &Arc<Store>,
     work: &Arc<WorkStore>,
+    wp: &Arc<WpStore>,
     name: &str,
     args: &Value,
     key: Option<&str>,
@@ -366,7 +374,7 @@ fn run_tool(
                 .get("changed")
                 .and_then(|v| v.as_str())
                 .and_then(clean_changed_line);
-            publish_bundle(work, store, slug, changed, key)
+            publish_bundle(work, store, wp, slug, changed, key)
         }
         _ => Err(format!("unknown tool: {name}")),
     }
@@ -608,6 +616,7 @@ fn write_file(
 fn publish_bundle(
     work: &Arc<WorkStore>,
     store: &Arc<Store>,
+    wp: &Arc<WpStore>,
     slug: &str,
     changed: Option<String>,
     key: Option<&str>,
@@ -623,13 +632,26 @@ fn publish_bundle(
             ),
             other => work_error_message(other),
         })?;
-    Ok(json!({
+    let mut out = json!({
         "slug": slug,
         "version": info.version,
         "published_at": info.published_at,
         "url": format!("/b/{slug}/"),
         "files": info.files,
-    }))
+    });
+    // The WordPress push rides an MCP publish exactly as it rides a
+    // web one — the same hook, run after the commit has landed,
+    // never failing the publish. Its report is persisted with the
+    // bundle by the sync itself and carried here in the same shape
+    // the web publish response carries: a `wordpress` field.
+    if let Some(bundle) = store.get(slug) {
+        if let Some(report) = crate::wordpress::sync_if_configured(wp, &bundle) {
+            if let Ok(value) = serde_json::from_str::<Value>(&report.to_json()) {
+                out["wordpress"] = value;
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn work_error_message(e: WorkError) -> String {
