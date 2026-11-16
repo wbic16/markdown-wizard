@@ -63,6 +63,15 @@ folder, browsable at the sidebar's foot, restorable in one click.
 Nothing is ever destroyed, and the vault is never published or
 served — like a draft, it is private by structure.
 
+A quieter act sits beside it: **Keep private**. The file stays in
+the bundle — in the sidebar, marked with a small *private*, still
+editable, still counted — and is simply not in the set a release
+commits. It appears in no published page, feed, download, or sync;
+un-mark it and re-release, and it is restored everywhere; mark a
+file that is already live and re-release, and it leaves the
+published bundle. The vault is for putting away; keep-private is
+for keeping close but unpublished.
+
 The page has a night setting. A quiet toggle in the editor's chrome
 cycles **System → Light → Dark**: your choice is stored in the
 browser and wins; with no choice stored, the OS preference
@@ -230,6 +239,17 @@ since — a human re-published meanwhile — the publish is refused as
 stale rather than overwriting the newer release, and the draft is
 kept. After a successful publish the copy re-bases onto the new
 version, so an agent session can keep writing.
+
+**Keep-private.** A `write_file` may carry `keep_private: true`:
+the file is marked in the working copy (the mark persists with the
+draft, and `list_files` with `draft: true` shows each file's mark).
+A publish commits the unmarked set — a marked file is in no
+published page, feed, download, or WordPress push — and the
+publish result names what it held back in a `kept_private` field.
+Writing the file again with `keep_private: false` clears the mark;
+the next publish restores the file, just as marking a live file
+and re-publishing removes it. If every markdown file is marked,
+the publish is refused: there is nothing to publish.
 
 **Auth.** The bundle's edit key is the credential, the same one
 the web flow issues. `write_file` and `publish_bundle` require it;

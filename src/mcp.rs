@@ -198,7 +198,10 @@ fn initialize(params: &Value) -> Value {
             copy (draft=true reads it back), and publish_bundle commits the draft. Writes \
             and draft reads require the bundle's edit key, sent as the X-Edit-Key header \
             or the edit_key argument. A first write_file to a never-published slug mints \
-            that key and returns it once — keep it.",
+            that key and returns it once — keep it. A file written with keep_private=true \
+            stays in the working copy but is held out of the publish set: publish_bundle \
+            commits everything else, and the result names what was held back. \
+            list_files with draft=true shows each file's keep_private mark.",
     })
 }
 
@@ -224,7 +227,7 @@ fn tools() -> Value {
         },
         {
             "name": "list_files",
-            "description": "A bundle's file tree: paths and sizes. By default the published bundle (the vault is private and never listed); with draft=true, the working copy, vault included, for the key holder.",
+            "description": "A bundle's file tree: paths and sizes. By default the published bundle (the vault is private and never listed); with draft=true, the working copy, vault included, for the key holder — each file there also carries its keep_private mark.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "slug": slug_arg, "draft": draft_arg, "edit_key": key_arg },
@@ -261,13 +264,14 @@ fn tools() -> Value {
         },
         {
             "name": "write_file",
-            "description": "Create or replace one file in the slug's working copy. Opens the copy when needed: seeded from the published bundle (edit key required), or minted fresh for a never-published slug — that first call returns the slug's new edit key, once. Nothing is public until publish_bundle.",
+            "description": "Create or replace one file in the slug's working copy. Opens the copy when needed: seeded from the published bundle (edit key required), or minted fresh for a never-published slug — that first call returns the slug's new edit key, once. Nothing is public until publish_bundle. The keep_private argument sets or clears the file's keep-private mark: a marked file stays in the working copy but is excluded from the set publish_bundle commits, so it appears in no published page, feed, download, or sync; marking a file that is already live and re-publishing removes it from the published bundle.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "slug": slug_arg,
                     "path": { "type": "string", "description": "The file's address inside the bundle — for example essays/one.md." },
                     "content": { "type": "string", "description": "The file's new text (may be empty to clear it)." },
+                    "keep_private": { "type": "boolean", "description": "Set (true) or clear (false) this file's keep-private mark with this write. Omit to leave the mark as it is." },
                     "edit_key": key_arg,
                 },
                 "required": ["slug", "path", "content"],
@@ -275,7 +279,7 @@ fn tools() -> Value {
         },
         {
             "name": "publish_bundle",
-            "description": "Commit the slug's working copy atomically — the same publish as the web release: version increments, the URL never changes, the previous version is kept for restore. Refuses when the published bundle has moved past the draft's base version. Requires the edit key. If the bundle is connected to a WordPress site, the release is pushed there too and the per-file sync report rides the result as a wordpress field. If it is connected to cloud storage (an S3 bucket, an Azure container, or a Google Cloud bucket), the release is copied there too and the report rides as a cloud field.",
+            "description": "Commit the slug's working copy atomically — the same publish as the web release: version increments, the URL never changes, the previous version is kept for restore. Files marked keep-private are held out of the commit and named in the result's kept_private field. Refuses when the published bundle has moved past the draft's base version. Requires the edit key. If the bundle is connected to a WordPress site, the release is pushed there too and the per-file sync report rides the result as a wordpress field. If it is connected to cloud storage (an S3 bucket, an Azure container, or a Google Cloud bucket), the release is copied there too and the report rides as a cloud field.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -371,7 +375,9 @@ fn run_tool(
                 .get("content")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "missing argument: content".to_string())?;
-            write_file(store, work, slug, path, content, key)
+            // Tri-state: an absent argument leaves the mark alone.
+            let keep_private = args.get("keep_private").and_then(|v| v.as_bool());
+            write_file(store, work, slug, path, content, key, keep_private)
         }
         "publish_bundle" => {
             let slug = arg_str(args, "slug")?;
@@ -442,7 +448,15 @@ fn list_files(
     if draft {
         let copy = lock_draft(work, slug, key)?;
         let guard = copy.lock().unwrap();
-        let files: Vec<Value> = guard.files.iter().map(|f| file_entry(f, true)).collect();
+        let files: Vec<Value> = guard
+            .files
+            .iter()
+            .map(|f| {
+                let mut entry = file_entry(f, true);
+                entry["keep_private"] = json!(guard.is_private(&f.path));
+                entry
+            })
+            .collect();
         return Ok(json!({
             "slug": slug,
             "source": "working",
@@ -589,6 +603,7 @@ fn write_file(
     path: &str,
     content: &str,
     key: Option<&str>,
+    keep_private: Option<bool>,
 ) -> Result<Value, String> {
     if !valid_slug(slug) {
         return Err("a slug is 1-64 chars of lowercase letters, digits, and hyphens, starting and ending with a letter or digit".to_string());
@@ -597,7 +612,7 @@ fn write_file(
         return Err(format!("unsafe path: {path:?}"));
     }
     let info = work
-        .write_file(store, slug, path, content.as_bytes(), key)
+        .write_file(store, slug, path, content.as_bytes(), key, keep_private)
         .map_err(work_error_message)?;
     let mut out = json!({
         "slug": slug,
@@ -608,6 +623,7 @@ fn write_file(
         "base_version": info.base_version,
         "published_version": store.get(slug).map(|b| b.version).unwrap_or(0),
         "diverged": info.diverged,
+        "keep_private": info.keep_private,
     });
     if let Some(minted) = &info.minted_key {
         out["edit_key"] = json!(minted);
@@ -645,6 +661,12 @@ fn publish_bundle(
         "url": format!("/b/{slug}/"),
         "files": info.files,
     });
+    // What the publish held back, named when there is any: the
+    // marked files stayed in the working copy and are in no
+    // published surface.
+    if !info.kept_private.is_empty() {
+        out["kept_private"] = json!(info.kept_private);
+    }
     // The WordPress push rides an MCP publish exactly as it rides a
     // web one — the same hook, run after the commit has landed,
     // never failing the publish. Its report is persisted with the

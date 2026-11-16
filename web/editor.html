@@ -135,6 +135,10 @@ button:hover { color: var(--accent); }
 .entry .wc {
   float: right; font-size: 0.74rem; color: var(--faint); margin-top: 0.2rem;
 }
+.entry .priv {
+  font-size: 0.72rem; color: var(--faint); font-style: italic;
+}
+#privBtn.on { color: var(--accent); border-color: var(--accent); }
 .entry.depth1 { padding-left: 2.1rem; }
 .entry.depth2 { padding-left: 3.0rem; }
 .pinned { border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); margin: 0.4rem 0; }
@@ -425,6 +429,7 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
         <span id="savedWord">Saved ✓</span>
         <span id="stateWord">Drafting</span>
         <button id="vaultBtn" title="Put this file in the vault">Put in the vault</button>
+        <button id="privBtn" title="Keep this file private — in the bundle, out of the publication">Keep private</button>
         <button id="faceToggle">Cloth</button>
         <button id="themeBtn">System</button>
         <a id="waysLink" href="/integrate" title="Your LLM, WordPress, your own hosting">Ways to use it</a>
@@ -626,6 +631,7 @@ const S = {
   version: null,
   view: {},                // path -> {caret, scroll} for exact resumption
   vaultDates: {},          // path -> ISO date it entered the vault
+  privates: {},            // path -> true, for files marked keep-private
   vaultSync: {},           // path -> {rev, hash} of the edit.phext.io vault copy last synced
   eraDismissed: false,
   freshSeed: false,        // true only for a brand-new bundle's first open
@@ -633,6 +639,11 @@ const S = {
 
 function isMd(p) { return /\.md$/i.test(p) || /\.markdown$/i.test(p); }
 function isVault(p) { return p === "vault" || p.startsWith("vault/"); }
+/* Keep-private: the file stays in the bundle — listed, editable,
+   counted — and is simply not in the set a release commits. The
+   vault is the stronger act (the file leaves the bundle's list);
+   this is the quieter one (the file stays, unpublished). */
+function isPrivate(p) { return !!S.privates[p]; }
 function isRootIndex(p) { return !p.includes("/") && /^(index|readme)\.md$/i.test(p); }
 function isScratch(p) { return p.toLowerCase() === "scratch.md"; }
 function incipitOf(text) {
@@ -665,7 +676,7 @@ function sidebarOrder() {
 }
 function publishableFiles() {
   return [...S.files.entries()]
-    .filter(([p]) => !isVault(p))
+    .filter(([p]) => !isVault(p) && !isPrivate(p))
     .sort((a, b) => a[0].localeCompare(b[0]));
 }
 async function bundleHash() {
@@ -834,11 +845,15 @@ function persist() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     try {
+      // Marks for files that no longer exist are dropped here —
+      // the one place every state change passes through.
+      for (const p of Object.keys(S.privates)) if (!S.files.has(p)) delete S.privates[p];
       const data = {
         files: Object.fromEntries([...S.files].map(([p, f]) => [p, f])),
         current: S.current, slug: S.slug, keys: S.keys,
         publishedHash: S.publishedHash, version: S.version,
         view: S.view, vaultDates: S.vaultDates, eraDismissed: S.eraDismissed,
+        privates: S.privates,
         vaultSync: S.vaultSync,
       };
       localStorage.setItem(LS_KEY, JSON.stringify(data));
@@ -861,6 +876,7 @@ function restore() {
     S.version = d.version || null;
     S.view = d.view || {};
     S.vaultDates = d.vaultDates || {};
+    S.privates = d.privates || {};
     S.vaultSync = d.vaultSync || {};
     S.eraDismissed = !!d.eraDismissed;
     return true;
@@ -1124,6 +1140,7 @@ function renameFile(oldPath, newPath, silent = false) {
   S.files = new Map(entries);
   if (S.view[oldPath]) { S.view[newPath] = S.view[oldPath]; delete S.view[oldPath]; }
   if (S.vaultDates[oldPath]) { S.vaultDates[newPath] = S.vaultDates[oldPath]; delete S.vaultDates[oldPath]; }
+  if (S.privates[oldPath]) { S.privates[newPath] = true; delete S.privates[oldPath]; }
   if (S.current === oldPath) {
     S.current = newPath;
     document.getElementById("pathInput").value = newPath;
@@ -1143,8 +1160,9 @@ function entryHtml(p, depth) {
   const f = S.files.get(p);
   const inc = f.kind === "text" ? (incipitOf(f.text) || p) : p;
   const wc = f.kind === "text" ? `<span class="wc">${wordCount(f.text)}</span>` : "";
+  const priv = isPrivate(p) ? `<span class="priv">private</span> ` : "";
   return `<div class="entry ${S.current === p ? "on" : ""} depth${depth}" data-path="${escapeAttr(p)}">
-    ${wc}<span class="inc">${escapeHtml(inc)}</span><span class="pth">${escapeHtml(p)}</span></div>`;
+    ${wc}<span class="inc">${escapeHtml(inc)}</span><span class="pth">${priv}${escapeHtml(p)}</span></div>`;
 }
 function renderSidebar() {
   const order = sidebarOrder();
@@ -1243,6 +1261,32 @@ function restoreFromVault(path) {
 }
 document.getElementById("vaultBtn").addEventListener("click", () => putInVault(S.current));
 
+/* ————— keep-private: in the bundle, out of the publication —————
+   The toggle sits beside the vault's, and works the same quiet
+   way: it marks the open file, the sidebar shows the mark, and
+   the release simply does not carry the file. Un-marking and
+   re-releasing restores it everywhere. A vault file is already
+   unpublished by the stronger act, so the toggle stands down
+   there. */
+function updatePrivBtn() {
+  const b = document.getElementById("privBtn");
+  const p = S.current;
+  const on = !!p && isPrivate(p);
+  b.textContent = on ? "Kept private" : "Keep private";
+  b.classList.toggle("on", on);
+  b.disabled = !p || isVault(p);
+  b.title = on
+    ? "This file is kept private — it stays in the bundle and out of the publication. Click to publish it with the bundle again."
+    : "Keep this file private — it stays in the bundle, out of the publication";
+}
+document.getElementById("privBtn").addEventListener("click", () => {
+  const p = S.current;
+  if (!p || isVault(p)) return;
+  if (S.privates[p]) delete S.privates[p];
+  else S.privates[p] = true;
+  renderSidebar(); updateChrome(); persist(); scheduleStateCheck();
+});
+
 /* ————— the sidebar filter —————
    The jump's fuzzy match, given a face: typing narrows the tree
    live, on path and first line alike, and clearing the box brings
@@ -1279,12 +1323,16 @@ async function updateStateWord() {
 }
 function updateChrome() {
   const addr = document.getElementById("pubAddr");
-  if (S.slug && S.publishedHash) {
+  if (S.current && isPrivate(S.current)) {
+    // No public address to point at: the file is not published.
+    addr.textContent = "kept private — not published";
+  } else if (S.slug && S.publishedHash) {
     const stem = S.current.replace(/\.(md|markdown)$/i, "");
     addr.innerHTML = `at <a href="/b/${S.slug}/${stem}" target="_blank" rel="noopener">${location.host}/b/${S.slug}/${stem}</a>`;
   } else addr.textContent = "";
   document.getElementById("releaseBtn").textContent =
     S.publishedHash ? "Re-publish (Your Version)" : "Release";
+  updatePrivBtn();
   updateStateWord();
 }
 
@@ -1361,6 +1409,7 @@ document.getElementById("importFile").addEventListener("change", async e => {
     S.files = files;
     S.current = sidebarOrder()[0];
     S.publishedHash = null; S.version = null; S.slug = null;
+    S.privates = {}; // the marks belonged to the bundle this one replaces
     renderSidebar(); persist(); openFile(S.current, { fresh: true }); updateChrome();
   } catch (err) { alert(err.message); }
   e.target.value = "";
@@ -2488,6 +2537,24 @@ async function runSelfTest() {
   check("wp report: a javascript: permalink is not a link",
     wpAnchors.length === 1 && wpAnchors[0].href === "https://example.com/b");
   wpResults.innerHTML = "";
+  // Keep-private: in the bundle, out of the publication.
+  S.files.set("secret-draft.md", { kind: "text", text: "# Secret Draft\n\nnot yet.\n" });
+  S.privates["secret-draft.md"] = true;
+  check("private: a marked file stays in the bundle", S.files.has("secret-draft.md"));
+  check("private: a marked file is out of the publish set",
+    !publishableFiles().some(([p]) => p === "secret-draft.md"));
+  check("private: a marked file stays in the sidebar's order",
+    sidebarOrder().includes("secret-draft.md"));
+  renderSidebar();
+  check("private: the mark shows quietly in the file list",
+    !!document.querySelector('.entry[data-path="secret-draft.md"] .priv'));
+  openFile("secret-draft.md", {});
+  check("private: the toggle reads Kept private on a marked file",
+    document.getElementById("privBtn").textContent === "Kept private");
+  delete S.privates["secret-draft.md"];
+  check("private: un-marking returns the file to the publish set",
+    publishableFiles().some(([p]) => p === "secret-draft.md"));
+  S.files.delete("secret-draft.md");
   // Silent rename from the first line
   S.files.set("note.md", { kind: "text", text: "# Field Notes\n\nbody\n" });
   S.current = "note.md";

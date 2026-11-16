@@ -516,3 +516,232 @@ fn mcp_published_reads_are_public_and_the_vault_stays_private() {
     ));
     assert!(write.contains("does not open"), "{write}");
 }
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// The keep-private mark, end to end: a marked file stays in the
+/// working copy — listed there with its mark, readable by the key
+/// holder — and is absent from every published surface, as if it
+/// did not exist. Un-marking restores it; marking it again after
+/// it was live removes it, because a publish replaces the whole
+/// published tree.
+#[test]
+fn mcp_keep_private_mark_holds_a_file_out_of_the_publication() {
+    let srv = start_server();
+    let slug = "marked-bundle";
+
+    // Three files; the middle one is marked as it is written. The
+    // first write mints the slug's edit key.
+    let w1 = tool_json(&call(
+        srv.port,
+        1,
+        "write_file",
+        json!({"slug": slug, "path": "index.md", "content": "# Marked Bundle\n\nOpen to every reader.\n"}),
+        None,
+    ));
+    let key = w1["edit_key"].as_str().expect("first write mints the key").to_string();
+    assert_eq!(w1["keep_private"], json!(false));
+    let w2 = tool_json(&call(
+        srv.port,
+        2,
+        "write_file",
+        json!({"slug": slug, "path": "secret-draft.md", "content": "# Secret Draft\n\nA unicorn hides here.\n", "keep_private": true, "edit_key": key}),
+        None,
+    ));
+    assert_eq!(w2["keep_private"], json!(true));
+    let w3 = tool_json(&call(
+        srv.port,
+        3,
+        "write_file",
+        json!({"slug": slug, "path": "essays/open.md", "content": "# Open Essay\n\nAlso public.\n", "edit_key": key}),
+        None,
+    ));
+    assert_eq!(w3["keep_private"], json!(false));
+
+    // The draft listing shows the mark, file by file.
+    let draft = tool_json(&call(
+        srv.port,
+        4,
+        "list_files",
+        json!({"slug": slug, "draft": true, "edit_key": key}),
+        None,
+    ));
+    let marks: Vec<(&str, bool)> = draft["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["path"].as_str().unwrap(), f["keep_private"].as_bool().unwrap()))
+        .collect();
+    assert!(marks.contains(&("secret-draft.md", true)), "{marks:?}");
+    assert!(marks.contains(&("index.md", false)), "{marks:?}");
+    assert!(marks.contains(&("essays/open.md", false)), "{marks:?}");
+
+    // Publish: one atomic act over the unmarked set, and the
+    // result names what was held back.
+    let pub1 = tool_json(&call(
+        srv.port,
+        5,
+        "publish_bundle",
+        json!({"slug": slug, "edit_key": key}),
+        None,
+    ));
+    assert_eq!(pub1["version"], json!(1));
+    assert_eq!(pub1["kept_private"], json!(["secret-draft.md"]));
+    let published_paths: Vec<&str> = pub1["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap())
+        .collect();
+    assert!(!published_paths.contains(&"secret-draft.md"), "{published_paths:?}");
+    // The draft, marks and all, agrees with the published bundle:
+    // a held-back file is not a divergence.
+    let draft_after = tool_json(&call(
+        srv.port,
+        6,
+        "list_files",
+        json!({"slug": slug, "draft": true, "edit_key": key}),
+        None,
+    ));
+    assert_eq!(draft_after["diverged"], json!(false), "{draft_after}");
+
+    // The published surface: as if the file does not exist.
+    assert_eq!(get(srv.port, "/b/marked-bundle/secret-draft.md").status, 404);
+    assert_eq!(get(srv.port, "/b/marked-bundle/secret-draft").status, 404);
+    assert_eq!(get(srv.port, "/b/marked-bundle/secret-draft.html").status, 404);
+    assert_eq!(get(srv.port, "/b/marked-bundle/secret-draft.pdf").status, 404);
+    let index = get(srv.port, "/b/marked-bundle/");
+    assert_eq!(index.status, 200);
+    let index_text = String::from_utf8_lossy(&index.body).into_owned();
+    assert!(!index_text.contains("secret-draft"), "{index_text}");
+    let feed_text =
+        String::from_utf8_lossy(&get(srv.port, "/b/marked-bundle/feed.xml").body).into_owned();
+    assert!(!feed_text.contains("secret-draft"), "{feed_text}");
+    // The site-wide feed is built from the same published bundles:
+    // the marked file is absent there too.
+    let site_feed =
+        String::from_utf8_lossy(&get(srv.port, "/rss.xml").body).into_owned();
+    assert!(!site_feed.contains("secret-draft"), "{site_feed}");
+    assert!(site_feed.contains("marked-bundle"), "{site_feed}");
+    let source_zip = get(srv.port, "/b/marked-bundle.zip");
+    assert_eq!(source_zip.status, 200);
+    assert!(
+        !contains_bytes(&source_zip.body, b"secret-draft"),
+        "the source zip carries the marked file"
+    );
+    let site_zip = get(srv.port, "/b/marked-bundle/site.zip");
+    assert_eq!(site_zip.status, 200);
+    assert!(
+        !contains_bytes(&site_zip.body, b"secret-draft"),
+        "the site zip carries the marked file"
+    );
+
+    // Published-side MCP agrees: not listed, not found by search.
+    let listed = tool_json(&call(srv.port, 7, "list_files", json!({"slug": slug}), None));
+    let paths: Vec<&str> = listed["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert!(!paths.contains(&"secret-draft.md"), "{paths:?}");
+    let search = tool_json(&call(
+        srv.port,
+        8,
+        "search_bundle",
+        json!({"slug": slug, "query": "unicorn"}),
+        None,
+    ));
+    assert_eq!(search["hits"].as_array().unwrap().len(), 0);
+
+    // The working copy kept the file through the publish.
+    let kept = tool_json(&call(
+        srv.port,
+        9,
+        "read_file",
+        json!({"slug": slug, "path": "secret-draft.md", "draft": true, "edit_key": key}),
+        None,
+    ));
+    assert!(kept["content"].as_str().unwrap().contains("unicorn"));
+
+    // Un-mark and re-publish: the file joins the publication.
+    let w4 = tool_json(&call(
+        srv.port,
+        10,
+        "write_file",
+        json!({"slug": slug, "path": "secret-draft.md", "content": "# Secret Draft\n\nA unicorn hides here.\n", "keep_private": false, "edit_key": key}),
+        None,
+    ));
+    assert_eq!(w4["keep_private"], json!(false));
+    let pub2 = tool_json(&call(
+        srv.port,
+        11,
+        "publish_bundle",
+        json!({"slug": slug, "edit_key": key}),
+        None,
+    ));
+    assert_eq!(pub2["version"], json!(2));
+    assert!(pub2.get("kept_private").is_none(), "{pub2}");
+    let raw = get(srv.port, "/b/marked-bundle/secret-draft.md");
+    assert_eq!(raw.status, 200);
+    assert!(String::from_utf8_lossy(&raw.body).contains("unicorn"));
+
+    // Mark it again and re-publish: it leaves the published tree —
+    // routes, feed, and downloads all lose it at the same commit.
+    let w5 = tool_json(&call(
+        srv.port,
+        12,
+        "write_file",
+        json!({"slug": slug, "path": "secret-draft.md", "content": "# Secret Draft\n\nA unicorn hides here.\n", "keep_private": true, "edit_key": key}),
+        None,
+    ));
+    assert_eq!(w5["keep_private"], json!(true));
+    let pub3 = tool_json(&call(
+        srv.port,
+        13,
+        "publish_bundle",
+        json!({"slug": slug, "edit_key": key}),
+        None,
+    ));
+    assert_eq!(pub3["version"], json!(3));
+    assert_eq!(pub3["kept_private"], json!(["secret-draft.md"]));
+    assert_eq!(get(srv.port, "/b/marked-bundle/secret-draft.md").status, 404);
+    assert_eq!(get(srv.port, "/b/marked-bundle/secret-draft").status, 404);
+    assert_eq!(get(srv.port, "/b/marked-bundle/secret-draft.html").status, 404);
+    let source_zip2 = get(srv.port, "/b/marked-bundle.zip");
+    assert!(!contains_bytes(&source_zip2.body, b"secret-draft"));
+    let site_zip2 = get(srv.port, "/b/marked-bundle/site.zip");
+    assert!(!contains_bytes(&site_zip2.body, b"secret-draft"));
+    let feed2 =
+        String::from_utf8_lossy(&get(srv.port, "/b/marked-bundle/feed.xml").body).into_owned();
+    assert!(!feed2.contains("secret-draft"), "{feed2}");
+    let site_feed2 =
+        String::from_utf8_lossy(&get(srv.port, "/rss.xml").body).into_owned();
+    assert!(!site_feed2.contains("secret-draft"), "{site_feed2}");
+}
+
+/// A bundle whose every markdown file is marked has nothing to
+/// publish — the refusal says so in the mark's own terms, rather
+/// than failing later as an empty bundle.
+#[test]
+fn mcp_publish_refuses_when_everything_is_kept_private() {
+    let srv = start_server();
+    let w = tool_json(&call(
+        srv.port,
+        1,
+        "write_file",
+        json!({"slug": "all-private", "path": "index.md", "content": "# Only\n", "keep_private": true}),
+        None,
+    ));
+    let key = w["edit_key"].as_str().expect("first write mints the key").to_string();
+    let err = tool_error(&call(
+        srv.port,
+        2,
+        "publish_bundle",
+        json!({"slug": "all-private", "edit_key": key}),
+        None,
+    ));
+    assert!(err.contains("keep-private"), "{err}");
+}

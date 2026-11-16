@@ -25,14 +25,25 @@
 //!   overwrites a newer release. The commit itself is the store's
 //!   own publish: the same gate, the same atomic swap. An agent's
 //!   edits and a human's edits meet only at that commit point.
+//! * A file may carry the **keep-private mark**: it stays in the
+//!   working copy, fully editable, but it is not in the set a
+//!   publish commits — the published bundle never contains it, so
+//!   no published surface (pages, feed, downloads, outputs, syncs)
+//!   can carry it. Un-marking and re-publishing restores it; marking
+//!   a file that is already live and re-publishing removes it,
+//!   because a publish replaces the whole published tree. The mark
+//!   is distinct from the vault: a vault file is put away out of
+//!   the bundle; a marked file stays in the bundle, out of the
+//!   publication.
 //!
 //! On disk, per slug, beside the published slots (see store.rs):
 //!   <slug>/work/bundle.zip   the draft's files, as an archive
-//!   <slug>/work/meta.txt     key_sha256= / base_version=
+//!   <slug>/work/meta.txt     key_sha256= / base_version=, plus one
+//!                            `private <path>` line per marked file
 //! A work directory whose archive fails to parse at load is skipped
 //! as uncommitted, exactly like a torn publish.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -52,11 +63,19 @@ pub struct WorkingCopy {
     pub base_version: u64,
     /// SHA-256 hex of the edit key. The key itself is never stored.
     pub key_sha256: String,
+    /// Paths carrying the keep-private mark (see the module docs):
+    /// in the working copy, out of the publish set. A set, in path
+    /// order, so the persisted form is stable.
+    pub private: BTreeSet<String>,
 }
 
 impl WorkingCopy {
     pub fn file(&self, path: &str) -> Option<&BundleFile> {
         self.files.iter().find(|f| f.path == path)
+    }
+
+    pub fn is_private(&self, path: &str) -> bool {
+        self.private.contains(path)
     }
 
     pub fn verify(&self, supplied_key: Option<&str>) -> bool {
@@ -123,17 +142,23 @@ pub struct WriteInfo {
     pub base_version: u64,
     pub diverged: bool,
     pub minted_key: Option<String>,
+    /// The written file's keep-private mark after this write.
+    pub keep_private: bool,
 }
 
 /// Does this draft differ from what's published? The three-state
 /// word (Drafting / Current / Diverged) rests on this comparison.
+/// The comparison is against the publishable set: a file marked
+/// keep-private is not a difference from the published bundle —
+/// it is deliberately not in it.
 pub fn diverged(store: &Store, slug: &str, copy: &WorkingCopy) -> bool {
     match store.get(slug) {
-        None => !copy.files.is_empty(),
+        None => copy.files.iter().any(|f| !copy.is_private(&f.path)),
         Some(b) => {
             let draft: Vec<(&str, &[u8])> = copy
                 .files
                 .iter()
+                .filter(|f| !copy.is_private(&f.path))
                 .map(|f| (f.path.as_str(), f.bytes.as_slice()))
                 .collect();
             let published: Vec<(&str, &[u8])> = b
@@ -151,6 +176,9 @@ pub struct PublishedInfo {
     pub version: u64,
     pub published_at: u64,
     pub files: Vec<String>,
+    /// Marked files held back from this publish, in path order.
+    /// They remain in the working copy, marks and all.
+    pub kept_private: Vec<String>,
 }
 
 pub struct WorkStore {
@@ -228,6 +256,9 @@ impl WorkStore {
                         files: bundle.parsed.files.clone(),
                         base_version: bundle.version,
                         key_sha256: bundle.key_sha256.clone(),
+                        // A published bundle's files are, by the
+                        // fact of their publication, unmarked.
+                        private: BTreeSet::new(),
                     },
                     None,
                 )
@@ -239,6 +270,7 @@ impl WorkStore {
                         files: Vec::new(),
                         base_version: 0,
                         key_sha256: sha256_hex(key.as_bytes()),
+                        private: BTreeSet::new(),
                     },
                     Some(key),
                 )
@@ -266,7 +298,9 @@ impl WorkStore {
     /// Create or replace one file in the slug's working copy,
     /// opening the copy first when needed, and persist the draft
     /// before returning — a write that answered is a write that
-    /// survives a restart.
+    /// survives a restart. `keep_private`, when carried, sets or
+    /// clears the file's keep-private mark with the same write;
+    /// when absent, the mark stands as it was.
     pub fn write_file(
         &self,
         store: &Store,
@@ -274,6 +308,7 @@ impl WorkStore {
         path: &str,
         content: &[u8],
         supplied_key: Option<&str>,
+        keep_private: Option<bool>,
     ) -> Result<WriteInfo, WorkError> {
         if content.len() as u64 > MAX_FILE_BYTES {
             return Err(WorkError::Invalid(format!(
@@ -312,22 +347,39 @@ impl WorkStore {
                 copy.files.sort_by(|a, b| a.path.cmp(&b.path));
             }
         }
+        // The mark, when the write carries one: a property of the
+        // file in the working copy, applied with the write that
+        // names it and persisted with the draft.
+        if let Some(mark) = keep_private {
+            if mark {
+                copy.private.insert(path.to_string());
+            } else {
+                copy.private.remove(path);
+            }
+        }
         let files = copy.files.len();
         let base_version = copy.base_version;
         let diverged = diverged(store, slug, &copy);
+        let keep_private = copy.is_private(path);
         self.persist(slug, &copy)?;
         Ok(WriteInfo {
             files,
             base_version,
             diverged,
             minted_key: opened.minted_key,
+            keep_private,
         })
     }
 
     /// Commit the slug's working copy through the store's own
     /// publish path — the same gate and the same atomic swap as a
     /// web release. Refuses when the published bundle has moved
-    /// past the draft's base version.
+    /// past the draft's base version. The commit set is the
+    /// publishable set: files marked keep-private are held back
+    /// (they stay in the working copy), so the published bundle
+    /// never contains them — and because a publish replaces the
+    /// whole published tree, a file marked after it was live
+    /// leaves the published surface with this commit.
     pub fn publish(
         &self,
         store: &Store,
@@ -340,7 +392,26 @@ impl WorkStore {
         if !guard.verify(supplied_key) {
             return Err(WorkError::WrongKey);
         }
-        let zip = build_zip(&guard.files).map_err(WorkError::Invalid)?;
+        // The publishable set: everything not marked keep-private.
+        // The publish stays one atomic act — over this set.
+        let publishable: Vec<BundleFile> = guard
+            .files
+            .iter()
+            .filter(|f| !guard.is_private(&f.path))
+            .cloned()
+            .collect();
+        if !publishable.iter().any(|f| f.is_markdown) {
+            return Err(WorkError::Invalid(
+                "nothing to publish: every markdown file in the working copy is marked keep-private. Un-mark at least one file first.".to_string(),
+            ));
+        }
+        let kept_private: Vec<String> = guard
+            .files
+            .iter()
+            .filter(|f| guard.is_private(&f.path))
+            .map(|f| f.path.clone())
+            .collect();
+        let zip = build_zip(&publishable).map_err(WorkError::Invalid)?;
         // The staleness gate lives inside the store's commit lock:
         // checked here, it would race a web publish landing between
         // the check and the commit. publish_from_draft refuses with
@@ -359,6 +430,7 @@ impl WorkStore {
             version: bundle.version,
             published_at: bundle.published_at,
             files: bundle.parsed.files.iter().map(|f| f.path.clone()).collect(),
+            kept_private,
         })
     }
 
@@ -369,10 +441,19 @@ impl WorkStore {
         let work_dir = slug_dir.join("work");
         fs::create_dir_all(&work_dir).map_err(io_err)?;
         let zip = build_zip(&copy.files).map_err(WorkError::Invalid)?;
-        let meta = format!(
+        let mut meta = format!(
             "key_sha256={}\nbase_version={}\n",
             copy.key_sha256, copy.base_version
         );
+        // One `private <path>` line per marked file. The set is a
+        // BTreeSet, so the lines land in path order and the file is
+        // stable: the mark is part of the draft's committed state
+        // and is restored with it. The path is the rest of the
+        // line — paths may hold spaces (never control characters;
+        // the bundle rules refuse those).
+        for path in &copy.private {
+            meta.push_str(&format!("private {path}\n"));
+        }
         let n = nonce();
         let staged_zip = work_dir.join(format!(".staging-{n}.zip"));
         let staged_meta = work_dir.join(format!(".staging-{n}.meta"));
@@ -393,11 +474,16 @@ fn load_working(work_dir: &Path) -> Result<WorkingCopy, String> {
         .map_err(|e| format!("draft meta unreadable: {e}"))?;
     let mut key_sha256 = None;
     let mut base_version = 0u64;
+    let mut private = BTreeSet::new();
     for line in meta.lines() {
         if let Some(v) = line.strip_prefix("key_sha256=") {
             key_sha256 = Some(v.trim().to_string());
         } else if let Some(v) = line.strip_prefix("base_version=") {
             base_version = v.trim().parse().unwrap_or(0);
+        } else if let Some(v) = line.strip_prefix("private ") {
+            // The path is the rest of the line, untrimmed: paths
+            // may hold spaces.
+            private.insert(v.to_string());
         }
     }
     let key_sha256 = key_sha256.ok_or("draft meta holds no key hash")?;
@@ -408,5 +494,6 @@ fn load_working(work_dir: &Path) -> Result<WorkingCopy, String> {
         files: parsed.files,
         base_version,
         key_sha256,
+        private,
     })
 }
