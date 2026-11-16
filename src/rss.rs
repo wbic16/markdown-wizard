@@ -4,7 +4,11 @@
 //! by structure, so there is nothing else a feed could be made from.
 //! One item per markdown file, in bundle order; the release's
 //! "What changed?" line rides in each item's description, and the
-//! version stamps the channel. Dates are RFC 822 in GMT, converted
+//! version stamps the channel. Each item is dated by its own
+//! file's last-changed stamp (see store.rs), so re-releasing a
+//! bundle for one file's sake does not re-date the rest; the
+//! channel's build date is the bundle's latest publish. Dates are
+//! RFC 822 in GMT, converted
 //! from Unix time by hand (the civil-date algorithm below) so the
 //! service needs no date crate.
 
@@ -84,7 +88,7 @@ pub fn feed_xml(bundle: &Bundle, base: &str) -> String {
             xml_escape(&item_title),
             xml_escape(&link),
             xml_escape(&link),
-            rfc822(bundle.published_at),
+            rfc822(bundle.stamps_of(&f.path).1),
             xml_escape(&desc),
         ));
     }

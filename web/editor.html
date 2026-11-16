@@ -104,6 +104,17 @@ button:hover { color: var(--accent); }
   display: block; font-family: var(--sans); font-size: 0.74rem;
   color: var(--faint); letter-spacing: 0.04em; margin-top: 0.15rem;
 }
+#filterRow { padding: 0.55rem 1.2rem 0.15rem; }
+#filterInput {
+  width: 100%; font-family: var(--sans); font-size: 0.85rem; color: var(--ink);
+  background: none; border: none; border-bottom: 1px solid var(--line);
+  padding: 0.2rem 0.1rem;
+}
+#filterInput:focus { outline: none; border-bottom-color: var(--accent); }
+#filterInput::placeholder { color: var(--faint); }
+.filter-none {
+  padding: 0.5rem 1.2rem; font-family: var(--serif); font-style: italic; color: var(--faint);
+}
 #treeWrap { flex: 1; overflow-y: auto; padding: 0.6rem 0 0.4rem; }
 .entry { padding: 0.42rem 1.2rem 0.42rem 1.2rem; cursor: pointer; }
 .entry:hover { background: var(--accent-soft); }
@@ -295,7 +306,9 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
   <aside id="sidebar">
     <div class="brand">md.phext.io
       <span class="sub">A ZIP OF MARKDOWN IS THE DOCUMENT</span>
+      <span class="sub" id="fileCount"></span>
     </div>
+    <div id="filterRow"><input id="filterInput" placeholder="Filter files…" spellcheck="false" title="Narrow the tree — the same match as ⌘K"></div>
     <div id="treeWrap">
       <div id="pinned"></div>
       <nav id="tree"></nav>
@@ -348,7 +361,8 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
       <span class="structures">Insert:
         <button data-structure="note">a note</button> ·
         <button data-structure="essay">an essay</button> ·
-        <button data-structure="list">a list</button>
+        <button data-structure="list">a list</button> ·
+        <button id="linkBtn">a link</button>
       </span>
     </footer>
   </main>
@@ -937,8 +951,15 @@ function entryHtml(p, depth) {
 }
 function renderSidebar() {
   const order = sidebarOrder();
-  const pinned = order.filter(p => isRootIndex(p) || isScratch(p));
-  const rest = order.filter(p => !isRootIndex(p) && !isScratch(p));
+  // The bundle's own number, in the brand's sub-line. The vault is
+  // not in it — the vault keeps its own count, at its own head.
+  document.getElementById("fileCount").textContent =
+    order.length === 1 ? "1 file" : `${order.length} files`;
+  // The filter narrows the tree by the jump's own match.
+  const q = filterQuery.trim();
+  const shown = q ? order.filter(p => fileMatches(q, p)) : order;
+  const pinned = shown.filter(p => isRootIndex(p) || isScratch(p));
+  const rest = shown.filter(p => !isRootIndex(p) && !isScratch(p));
   document.getElementById("pinned").innerHTML =
     pinned.length ? `<div class="pinned">${pinned.map(p => entryHtml(p, 0)).join("")}</div>` : "";
   let html = "", era = null;
@@ -950,7 +971,8 @@ function renderSidebar() {
     }
     html += entryHtml(p, p.split("/").length - 1);
   }
-  document.getElementById("tree").innerHTML = html;
+  document.getElementById("tree").innerHTML =
+    q && !shown.length ? `<div class="filter-none">Nothing by that name.</div>` : html;
   // The vault, at the foot, collapsed until asked.
   const vaultPaths = [...S.files.keys()].filter(isVault).sort();
   document.getElementById("vaultHead").textContent =
@@ -972,7 +994,7 @@ function renderSidebar() {
   // Eras: six loose files is an era's worth.
   const loose = rest.filter(p => !p.includes("/")).length;
   const nudge = document.getElementById("eraNudge");
-  if (loose >= 6 && !S.eraDismissed) {
+  if (loose >= 6 && !S.eraDismissed && !q) {
     nudge.style.display = "block";
     nudge.innerHTML = `Getting to be an era's worth. Group these?
       <button id="eraMake">Make it an era</button> <button id="eraNo">Not now</button>
@@ -1024,6 +1046,28 @@ function restoreFromVault(path) {
 }
 document.getElementById("vaultBtn").addEventListener("click", () => putInVault(S.current));
 
+/* ————— the sidebar filter —————
+   The jump's fuzzy match, given a face: typing narrows the tree
+   live, on path and first line alike, and clearing the box brings
+   the whole tree back. ⌘K remains the keyboard's way in. */
+let filterQuery = "";
+function fileMatches(q, p) {
+  const f = S.files.get(p);
+  const inc = f && f.kind === "text" ? (incipitOf(f.text) || "") : "";
+  return Math.max(fuzzy(q, p), fuzzy(q, inc)) >= 0;
+}
+const filterInput = document.getElementById("filterInput");
+filterInput.addEventListener("input", () => {
+  filterQuery = filterInput.value;
+  renderSidebar();
+});
+filterInput.addEventListener("keydown", e => {
+  if (e.key === "Escape") {
+    filterInput.value = ""; filterQuery = "";
+    renderSidebar(); filterInput.blur();
+  }
+});
+
 /* ————— chrome: address, state, count ————— */
 let stateTimer = null;
 function scheduleStateCheck() {
@@ -1073,6 +1117,42 @@ document.querySelectorAll("[data-structure]").forEach(b => {
     editor.focus();
   });
 });
+/* A link, from the same status bar: wrap the selection, or set
+   down a skeleton. The address comes from the clipboard when it
+   holds one and reading it is allowed; otherwise the part still
+   to write stands selected, ready to be typed or pasted over.
+   Pattern face only — a way of writing markdown, not a visual
+   mode. insertLinkWith is the whole mechanism; insertLink only
+   asks the clipboard first. */
+function insertLinkWith(url) {
+  const start = editor.selectionStart, end = editor.selectionEnd;
+  const sel = editor.value.slice(start, end);
+  const label = "link text";
+  let text, markStart, markEnd;
+  if (sel) {
+    text = url ? `[${sel}](${url})` : `[${sel}](url)`;
+    markStart = url ? start + text.length : start + sel.length + 3;
+    markEnd = url ? markStart : markStart + 3;
+  } else {
+    text = url ? `[${label}](${url})` : `[${label}](url)`;
+    markStart = start + 1;
+    markEnd = markStart + label.length;
+  }
+  editor.setRangeText(text, start, end, "end");
+  editor.focus();
+  editor.setSelectionRange(markStart, markEnd);
+  editor.dispatchEvent(new Event("input"));
+}
+async function insertLink() {
+  if (editor.disabled || !S.current) return;
+  let url = null;
+  try {
+    const t = (await navigator.clipboard.readText()).trim();
+    if (/^https?:\/\/[^\s)]+$/.test(t)) url = t;
+  } catch (e) { /* the clipboard is not ours to read: the placeholder stands */ }
+  insertLinkWith(url);
+}
+document.getElementById("linkBtn").addEventListener("click", insertLink);
 document.getElementById("importBtn").addEventListener("click", () =>
   document.getElementById("importFile").click());
 document.getElementById("importFile").addEventListener("change", async e => {
@@ -1390,6 +1470,53 @@ async function runSelfTest() {
   // The hook
   const hook = hookOf("# T\n\nbody\n\n<!-- next: ask about the fence -->\n");
   check("hook: found and selects the note", !!hook && hook.end > hook.start);
+  // The sidebar filter and the bundle's count.
+  renderSidebar();
+  check("filter: the box is at the tree's head", !!document.getElementById("filterInput"));
+  check("count: the brand counts the bundle's files",
+    document.getElementById("fileCount").textContent === "4 files",
+    document.getElementById("fileCount").textContent);
+  filterInput.value = "about";
+  filterInput.dispatchEvent(new Event("input"));
+  check("filter: typing narrows the tree to the match",
+    [...document.querySelectorAll(".entry")].map(e => e.dataset.path).join(",") === "about.md",
+    [...document.querySelectorAll(".entry")].map(e => e.dataset.path).join(","));
+  filterInput.value = "";
+  filterInput.dispatchEvent(new Event("input"));
+  check("filter: clearing restores the whole tree",
+    document.querySelectorAll(".entry").length === 4,
+    String(document.querySelectorAll(".entry").length));
+  putInVault("draft.md");
+  check("count: a vaulted file leaves the count",
+    document.getElementById("fileCount").textContent === "3 files",
+    document.getElementById("fileCount").textContent);
+  restoreFromVault("vault/draft.md");
+  check("count: a restored file returns to the count",
+    document.getElementById("fileCount").textContent === "4 files",
+    document.getElementById("fileCount").textContent);
+  // Link insertion: wrap with an address, wrap without one, skeleton.
+  openFile("about.md", {});
+  const setText = t => { editor.value = t; S.files.get("about.md").text = t; };
+  setText("Read the docs today.\n");
+  editor.focus();
+  editor.setSelectionRange(5, 13);
+  insertLinkWith("https://example.com/docs");
+  check("link: a selection wraps around the address",
+    editor.value === "Read [the docs](https://example.com/docs) today.\n", editor.value);
+  setText("Read the docs today.\n");
+  editor.setSelectionRange(5, 13);
+  insertLinkWith(null);
+  check("link: no address leaves the address selected",
+    editor.value === "Read [the docs](url) today.\n"
+      && editor.value.slice(editor.selectionStart, editor.selectionEnd) === "url",
+    editor.value + " / " + editor.selectionStart + "-" + editor.selectionEnd);
+  setText("Read on.\n");
+  editor.setSelectionRange(5, 5);
+  insertLinkWith("https://example.com");
+  check("link: no selection sets a skeleton, its text selected",
+    editor.value === "Read [link text](https://example.com)on.\n"
+      && editor.value.slice(editor.selectionStart, editor.selectionEnd) === "link text",
+    editor.value + " / " + editor.selectionStart + "-" + editor.selectionEnd);
   // Theme: the resolution order — a stored choice beats the OS,
   // the OS beats the default, and the toggle cycles the choice.
   check("theme: resolver honours a light choice over a dark OS", resolveTheme("light", true) === "light");

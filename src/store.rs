@@ -38,6 +38,7 @@
 //! On-disk layout, per slug, under the data directory:
 //!   <slug>/bundle.zip        the archive exactly as published (commit)
 //!   <slug>/meta.txt          key_sha256= / published_at= / version= / changed=
+//!                            plus one `stamp` line per file (see below)
 //!   <slug>/prev/bundle.zip   the previous published version
 //!   <slug>/prev/meta.txt     its meta, its own version and date
 //! A directory whose bundle.zip fails to parse at load is skipped as
@@ -52,6 +53,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::bundle::{constant_time_eq, new_edit_key, parse_bundle, sha256_hex, ParsedBundle};
 
+/// When one file was first published, and when its content last
+/// changed. A bundle's feed dates each item by its own file's
+/// `last_changed`, so re-releasing a bundle for one file's sake does
+/// not re-date the rest.
+#[derive(Clone, Copy)]
+pub struct FileStamps {
+    pub first_published: u64,
+    pub last_changed: u64,
+}
+
 /// One published bundle, immutable once built. Readers clone the
 /// `Arc` and drop the lock immediately — the snapshot pattern.
 pub struct Bundle {
@@ -59,6 +70,10 @@ pub struct Bundle {
     pub parsed: ParsedBundle,
     /// Unix seconds of the publish that produced this state.
     pub published_at: u64,
+    /// Per-file publish stamps, keyed by path. A file published
+    /// before stamps existed has no entry; `stamps_of` falls back to
+    /// the bundle's own stamp for it.
+    pub file_stamps: HashMap<String, FileStamps>,
     /// Release number: 1 at first publish, +1 at every re-publish.
     /// A restored bundle carries its own number back with it.
     pub version: u64,
@@ -66,6 +81,20 @@ pub struct Bundle {
     pub changed: Option<String>,
     /// SHA-256 hex of the edit key. The key itself is never stored.
     pub key_sha256: String,
+}
+
+impl Bundle {
+    /// One file's (first published, last changed) stamps. Files
+    /// with no stamps of their own — anything published before
+    /// per-file stamps existed — fall back to the bundle's stamp:
+    /// as far as the record knows, they were born and last changed
+    /// when the bundle was.
+    pub fn stamps_of(&self, path: &str) -> (u64, u64) {
+        match self.file_stamps.get(path) {
+            Some(s) => (s.first_published, s.last_changed),
+            None => (self.published_at, self.published_at),
+        }
+    }
 }
 
 pub struct Store {
@@ -80,6 +109,7 @@ pub enum PublishOutcome {
     Replaced { bundle: Arc<Bundle> },
 }
 
+#[derive(Debug)]
 pub enum PublishError {
     /// The bundle bytes failed validation (message is user-facing).
     Invalid(String),
@@ -197,10 +227,36 @@ impl Store {
             }
         };
 
+        let now = now_unix();
+        // Per-file stamps, from content hashes (the publish path
+        // already hashes what it must): a file whose hash holds
+        // keeps both stamps; a changed file keeps its first
+        // published and advances only its last changed; a new file
+        // is born stamped now.
+        let mut file_stamps: HashMap<String, FileStamps> = HashMap::new();
+        for f in &parsed.files {
+            let stamp = match &existing {
+                Some(old) => match old.parsed.file(&f.path) {
+                    Some(prev) if sha256_hex(&prev.bytes) == sha256_hex(&f.bytes) => {
+                        let (first, last) = old.stamps_of(&f.path);
+                        FileStamps { first_published: first, last_changed: last }
+                    }
+                    Some(_) => {
+                        let (first, _) = old.stamps_of(&f.path);
+                        FileStamps { first_published: first, last_changed: now }
+                    }
+                    None => FileStamps { first_published: now, last_changed: now },
+                },
+                None => FileStamps { first_published: now, last_changed: now },
+            };
+            file_stamps.insert(f.path.clone(), stamp);
+        }
+
         let bundle = Arc::new(Bundle {
             slug: slug.to_string(),
             parsed,
-            published_at: now_unix(),
+            published_at: now,
+            file_stamps,
             version,
             changed,
             key_sha256,
@@ -269,6 +325,19 @@ impl Store {
         if let Some(changed) = &bundle.changed {
             meta_text.push_str(&format!("changed={changed}\n"));
         }
+        // One stamp line per file, in path order so the file is
+        // stable: `stamp <first-published> <last-changed> <path>`.
+        // The path is the rest of the line — paths may hold spaces
+        // (never control characters; the bundle rules refuse those).
+        let mut stamp_paths: Vec<&String> = bundle.file_stamps.keys().collect();
+        stamp_paths.sort();
+        for path in stamp_paths {
+            let s = &bundle.file_stamps[path];
+            meta_text.push_str(&format!(
+                "stamp {} {} {}\n",
+                s.first_published, s.last_changed, path
+            ));
+        }
         write_synced(&staged_meta, meta_text.as_bytes()).map_err(io_err)?;
         write_synced(&staged_zip, &bundle.parsed.zip_bytes).map_err(io_err)?;
         fs::rename(&staged_meta, slug_dir.join("meta.txt")).map_err(io_err)?;
@@ -313,6 +382,7 @@ fn load_bundle(dir: &Path, slug: &str) -> Result<Bundle, String> {
     let mut published_at = 0u64;
     let mut version = 1u64;
     let mut changed = None;
+    let mut file_stamps: HashMap<String, FileStamps> = HashMap::new();
     for line in meta.lines() {
         if let Some(v) = line.strip_prefix("key_sha256=") {
             key_sha256 = Some(v.trim().to_string());
@@ -322,6 +392,20 @@ fn load_bundle(dir: &Path, slug: &str) -> Result<Bundle, String> {
             version = v.trim().parse().unwrap_or(1);
         } else if let Some(v) = line.strip_prefix("changed=") {
             changed = clean_changed_line(v);
+        } else if let Some(v) = line.strip_prefix("stamp ") {
+            let mut parts = v.splitn(3, ' ');
+            if let (Some(first), Some(last), Some(path)) =
+                (parts.next(), parts.next(), parts.next())
+            {
+                if let (Ok(first), Ok(last)) =
+                    (first.trim().parse::<u64>(), last.trim().parse::<u64>())
+                {
+                    file_stamps.insert(
+                        path.to_string(),
+                        FileStamps { first_published: first, last_changed: last },
+                    );
+                }
+            }
         }
     }
     let key_sha256 = key_sha256.ok_or("meta holds no key hash")?;
@@ -332,8 +416,152 @@ fn load_bundle(dir: &Path, slug: &str) -> Result<Bundle, String> {
         slug: slug.to_string(),
         parsed,
         published_at,
+        file_stamps,
         version,
         changed,
         key_sha256,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A stored zip, built by hand the way the HTTP tests build
+    /// theirs — the store's tests need real bundles, not fixtures
+    /// of the store's own making.
+    fn zip_of(files: &[(&str, &str)]) -> Vec<u8> {
+        fn crc32(bytes: &[u8]) -> u32 {
+            let mut table = [0u32; 256];
+            for (n, slot) in table.iter_mut().enumerate() {
+                let mut c = n as u32;
+                for _ in 0..8 {
+                    c = if c & 1 != 0 { 0xedb88320 ^ (c >> 1) } else { c >> 1 };
+                }
+                *slot = c;
+            }
+            let mut c = 0xffffffffu32;
+            for &b in bytes {
+                c = table[((c ^ b as u32) & 0xff) as usize] ^ (c >> 8);
+            }
+            c ^ 0xffffffff
+        }
+        let mut out = Vec::new();
+        let mut central = Vec::new();
+        for (name, text) in files {
+            let offset = out.len() as u32;
+            let data = text.as_bytes();
+            let crc = crc32(data);
+            let mut local = Vec::new();
+            local.extend_from_slice(&0x04034b50u32.to_le_bytes());
+            local.extend_from_slice(&20u16.to_le_bytes());
+            local.extend_from_slice(&0x0800u16.to_le_bytes());
+            local.extend_from_slice(&0u16.to_le_bytes());
+            local.extend_from_slice(&0u16.to_le_bytes());
+            local.extend_from_slice(&0x21u16.to_le_bytes());
+            local.extend_from_slice(&crc.to_le_bytes());
+            local.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            local.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            local.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            local.extend_from_slice(&0u16.to_le_bytes());
+            local.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&local);
+            out.extend_from_slice(data);
+            let mut cen = Vec::new();
+            cen.extend_from_slice(&0x02014b50u32.to_le_bytes());
+            cen.extend_from_slice(&20u16.to_le_bytes());
+            cen.extend_from_slice(&20u16.to_le_bytes());
+            cen.extend_from_slice(&0x0800u16.to_le_bytes());
+            cen.extend_from_slice(&0u16.to_le_bytes());
+            cen.extend_from_slice(&0u16.to_le_bytes());
+            cen.extend_from_slice(&0x21u16.to_le_bytes());
+            cen.extend_from_slice(&crc.to_le_bytes());
+            cen.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            cen.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            cen.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            cen.extend_from_slice(&[0u8; 12]);
+            cen.extend_from_slice(&offset.to_le_bytes());
+            cen.extend_from_slice(name.as_bytes());
+            central.extend_from_slice(&cen);
+        }
+        let cd_offset = out.len() as u32;
+        out.extend_from_slice(&central);
+        let mut end = Vec::new();
+        end.extend_from_slice(&0x06054b50u32.to_le_bytes());
+        end.extend_from_slice(&0u16.to_le_bytes());
+        end.extend_from_slice(&0u16.to_le_bytes());
+        end.extend_from_slice(&(files.len() as u16).to_le_bytes());
+        end.extend_from_slice(&(files.len() as u16).to_le_bytes());
+        end.extend_from_slice(&(central.len() as u32).to_le_bytes());
+        end.extend_from_slice(&cd_offset.to_le_bytes());
+        end.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&end);
+        out
+    }
+
+    fn created_key(outcome: PublishOutcome) -> String {
+        match outcome {
+            PublishOutcome::Created { edit_key, .. } => edit_key,
+            PublishOutcome::Replaced { .. } => panic!("expected a first publish"),
+        }
+    }
+
+    #[test]
+    fn stamps_advance_only_for_the_changed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let v1 = zip_of(&[("index.md", "# Home\n"), ("about.md", "one\n")]);
+        let key = created_key(store.publish("b", v1, None, None).unwrap());
+        let b1 = store.get("b").unwrap();
+        let index1 = b1.stamps_of("index.md");
+        let about1 = b1.stamps_of("about.md");
+        assert!(about1.0 > 0 && about1.0 == about1.1, "a new file is born stamped once");
+
+        // Feed dates are seconds; let the clock move so an advance
+        // is visible at all.
+        std::thread::sleep(Duration::from_millis(1100));
+        let v2 = zip_of(&[
+            ("index.md", "# Home\n"),
+            ("about.md", "two\n"),
+            ("new.md", "# New\n"),
+        ]);
+        store.publish("b", v2, Some(&key), None).unwrap();
+        let b2 = store.get("b").unwrap();
+        assert_eq!(b2.stamps_of("index.md"), index1, "an untouched file keeps both stamps");
+        let about2 = b2.stamps_of("about.md");
+        assert_eq!(about2.0, about1.0, "a changed file keeps its first published");
+        assert!(about2.1 > about1.1, "a changed file's last changed advances");
+        let new2 = b2.stamps_of("new.md");
+        assert_eq!(new2.0, new2.1, "a new file is born stamped once");
+        assert_eq!(new2.1, about2.1, "a new file is stamped at this publish");
+
+        // The stamps are the record: they survive a reload.
+        let store2 = Store::open(dir.path().to_path_buf()).unwrap();
+        let rb = store2.get("b").unwrap();
+        assert_eq!(rb.stamps_of("index.md"), index1);
+        assert_eq!(rb.stamps_of("about.md"), about2);
+        assert_eq!(rb.stamps_of("new.md"), new2);
+    }
+
+    #[test]
+    fn a_bundle_without_stamp_lines_falls_back_to_its_own_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let v1 = zip_of(&[("index.md", "# Home\n")]);
+        store.publish("b", v1, None, None).unwrap();
+        // Rewrite the meta the way a pre-stamps build wrote it.
+        let meta_path = dir.path().join("b").join("meta.txt");
+        let meta = fs::read_to_string(&meta_path).unwrap();
+        let legacy: String = meta
+            .lines()
+            .filter(|l| !l.starts_with("stamp "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        fs::write(&meta_path, legacy).unwrap();
+        let store2 = Store::open(dir.path().to_path_buf()).unwrap();
+        let b = store2.get("b").unwrap();
+        assert!(b.published_at > 0);
+        assert_eq!(b.stamps_of("index.md"), (b.published_at, b.published_at));
+    }
 }

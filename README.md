@@ -42,11 +42,17 @@ narrow ones. Scrolling either scrolls the other; the paragraph your
 caret rests in is softly lit in the other face. There is no Save
 button — the draft autosaves to the browser as an invariant, and
 reopening restores the last file, its scroll, and its caret exactly.
+The status bar inserts a note, an essay, a list — or a link, which
+wraps the selection, taking its address from the clipboard when the
+clipboard holds one.
 A file may end with a next-line hook, `<!-- next: … -->`; reopening
 it places the caret on the note.
 
 Files are registers: `Cmd/Ctrl-K` fuzzy-jumps by path, `Cmd/Ctrl-1…9`
-opens the first nine, `Cmd/Ctrl+Shift+F` is focus mode. Deleting is
+opens the first nine, `Cmd/Ctrl+Shift+F` is focus mode. The sidebar's
+head carries a filter box — the jump's fuzzy match on path and first
+line, narrowing the tree as you type — and the brand line keeps a
+quiet count of the bundle's files. Deleting is
 called **Put in the vault**: the file moves to the bundle's `vault/`
 folder, browsable at the sidebar's foot, restorable in one click.
 Nothing is ever destroyed, and the vault is never published or
@@ -73,6 +79,10 @@ public URL rendered large *before* you commit, an optional one-line
 - The URL never changes. Each re-publish increments the version:
   published pages carry `Version N · (Your Version) · updated <date>`
   and the change line, which also enters the feed.
+- Feed items carry their own file's dates, not the release's:
+  re-releasing a bundle for one file's sake does not re-date the
+  rest. A file's first-published date is kept; its last-changed
+  advances only when its content does.
 - The previous version is kept. Restoring it is the same operation
   run with the old bytes, so a restore is itself reversible —
   reversibility replaces confirmation dialogs.

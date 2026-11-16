@@ -300,6 +300,54 @@ fn publish_serve_republish_restore_cycle() {
     assert_eq!(fwd.body, b"# One\n\nSecond version.\n");
 }
 
+/// One item's pubDate in a feed: items are single lines, and the
+/// item is the one whose link names the file's stem.
+fn feed_date(feed: &str, slug: &str, stem: &str) -> String {
+    let needle = format!("/b/{slug}/{stem}</link>");
+    for line in feed.lines() {
+        if line.contains("<item>") && line.contains(&needle) {
+            let start = line.find("<pubDate>").expect("item has a pubDate") + "<pubDate>".len();
+            let end = line[start..].find("</pubDate>").expect("pubDate closes") + start;
+            return line[start..end].to_string();
+        }
+    }
+    panic!("no feed item for {stem} in: {feed}");
+}
+
+#[test]
+fn feed_dates_follow_each_file_not_the_release() {
+    let srv = start_server();
+    let zip1 = make_zip(&[("index.md", INDEX_V1), ("about.md", ABOUT)]);
+    let r = publish(srv.port, "dated-bundle", &zip1, None, None);
+    assert_eq!(r.status, 201, "first publish: {}", String::from_utf8_lossy(&r.body));
+    let key = json_str(&r.body, "edit_key").expect("first publish returns the key");
+    let feed1 = String::from_utf8_lossy(&get(srv.port, "/b/dated-bundle/feed.xml").body).into_owned();
+    let index1 = feed_date(&feed1, "dated-bundle", "index");
+    let about1 = feed_date(&feed1, "dated-bundle", "about");
+    assert_eq!(index1, about1, "a first publish dates every file alike: {feed1}");
+
+    // Feed dates are seconds; let the clock move so an advance is
+    // visible at all.
+    std::thread::sleep(Duration::from_millis(1200));
+    let zip2 = make_zip(&[
+        ("index.md", INDEX_V1),
+        ("about.md", "The short version of the test bundle, revised.\n"),
+    ]);
+    let r2 = publish(srv.port, "dated-bundle", &zip2, Some(&key), None);
+    assert_eq!(r2.status, 200, "re-publish: {}", String::from_utf8_lossy(&r2.body));
+    let feed2 = String::from_utf8_lossy(&get(srv.port, "/b/dated-bundle/feed.xml").body).into_owned();
+    assert_eq!(
+        feed_date(&feed2, "dated-bundle", "index"),
+        index1,
+        "an untouched file keeps its date across a re-release: {feed2}"
+    );
+    assert_ne!(
+        feed_date(&feed2, "dated-bundle", "about"),
+        about1,
+        "the edited file's date advances: {feed2}"
+    );
+}
+
 #[test]
 fn invalid_bundles_are_refused_whole() {
     let srv = start_server();
