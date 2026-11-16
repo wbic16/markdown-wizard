@@ -316,9 +316,13 @@ test('W9–W12 publish → stable raw .md URL, reading view, RSS feed', async ({
 test('W13 sign-in gate → a door, never a gate; the edit key is the credential', async ({ page, browser }) => {
   const s = slug('key');
   await openEditor(page);
-  // The account door is present in the chrome — and is never
-  // touched in this test: everything below happens signed out.
+  // The account door is present — behind Settings, since the
+  // complexity relocation took it off the writing surface — and
+  // is never used in this test: everything below happens
+  // signed out.
+  await page.locator('#settingsBtn').click();
   await expect(page.locator('#accountBtn')).toBeVisible();
+  await page.locator('#settingsBack').click();
 
   // The full create → publish flow, with no credential presented.
   await page.locator('#releaseBtn').click();
