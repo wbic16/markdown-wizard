@@ -19,6 +19,7 @@ mod mcp;
 mod render;
 mod rss;
 mod store;
+mod wordpress;
 mod work;
 
 use std::collections::HashMap;
@@ -28,9 +29,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bundle::{is_markdown_path, is_vault_path, valid_bundle_path, valid_slug, MAX_ZIP_BYTES};
+use bundle::{
+    constant_time_eq, is_markdown_path, is_vault_path, sha256_hex, valid_bundle_path, valid_slug,
+    MAX_ZIP_BYTES,
+};
 use http::{CacheClass, HTML, JSON, TEXT};
 use store::{PublishError, PublishOutcome, Store};
+use wordpress::WpStore;
 use work::WorkStore;
 
 const EDITOR_HTML: &str = include_str!("../web/editor.html");
@@ -109,6 +114,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let wp = Arc::new(WpStore::new(cfg.dir.clone()));
     let listener = TcpListener::bind(format!("{}:{}", cfg.host, cfg.port)).unwrap_or_else(|e| {
         eprintln!("markdown-wizard: cannot bind {}:{}: {e}", cfg.host, cfg.port);
         std::process::exit(1);
@@ -126,10 +132,11 @@ fn main() {
             Ok(stream) => {
                 let store = store.clone();
                 let work = work.clone();
+                let wp = wp.clone();
                 std::thread::spawn(move || {
                     let mut stream = stream;
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-                    handle(&mut stream, &store, &work);
+                    handle(&mut stream, &store, &work, &wp);
                 });
             }
             Err(_) => continue,
@@ -148,7 +155,7 @@ fn public_base(headers: &HashMap<String, String>) -> String {
     format!("{scheme}://{host}")
 }
 
-fn handle(stream: &mut TcpStream, store: &Arc<Store>, work: &Arc<WorkStore>) {
+fn handle(stream: &mut TcpStream, store: &Arc<Store>, work: &Arc<WorkStore>, wp: &Arc<WpStore>) {
     let cloned = match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
@@ -201,8 +208,14 @@ fn handle(stream: &mut TcpStream, store: &Arc<Store>, work: &Arc<WorkStore>) {
             let fragment = render::render_markdown(&md);
             http::send_response(stream, 200, HTML, fragment.as_bytes(), CacheClass::NoStore, &headers, false)
         }
-        ("POST", "/api/publish") => handle_publish(stream, &mut reader, &headers, store),
-        ("POST", "/api/restore") => handle_restore(stream, &headers, store),
+        ("POST", "/api/publish") => handle_publish(stream, &mut reader, &headers, store, wp),
+        ("POST", "/api/restore") => handle_restore(stream, &headers, store, wp),
+        ("POST", "/api/wordpress/sync") => handle_wp_sync(stream, &headers, store, wp),
+        ("POST", "/api/wordpress") => handle_wp_save(stream, &mut reader, &headers, store, wp),
+        ("GET" | "HEAD", p) if p.starts_with("/api/wordpress/") => {
+            let slug = &p["/api/wordpress/".len()..];
+            handle_wp_get(stream, &headers, store, wp, slug, head_only)
+        }
         // The MCP endpoint: POST is the whole transport; any other
         // method is answered inside, as a JSON 405 (see mcp.rs).
         ("POST", "/mcp" | "/mcp/") | ("GET" | "HEAD", "/mcp" | "/mcp/") => {
@@ -261,6 +274,7 @@ fn handle_publish(
     reader: &mut BufReader<TcpStream>,
     headers: &HashMap<String, String>,
     store: &Arc<Store>,
+    wp: &Arc<WpStore>,
 ) {
     let slug = headers.get("x-slug").cloned().unwrap_or_default();
     if !valid_slug(&slug) {
@@ -276,11 +290,13 @@ fn handle_publish(
         .and_then(|s| store::clean_changed_line(s));
     match store.publish(&slug, body, key, changed) {
         Ok(PublishOutcome::Created { bundle, edit_key }) => {
-            let body = publish_json(&bundle, Some(&edit_key));
+            let report = sync_if_configured(wp, &bundle);
+            let body = publish_json(&bundle, Some(&edit_key), report.as_ref());
             http::send_response(stream, 201, JSON, body.as_bytes(), CacheClass::NoStore, headers, false)
         }
         Ok(PublishOutcome::Replaced { bundle }) => {
-            let body = publish_json(&bundle, None);
+            let report = sync_if_configured(wp, &bundle);
+            let body = publish_json(&bundle, None, report.as_ref());
             http::send_response(stream, 200, JSON, body.as_bytes(), CacheClass::NoStore, headers, false)
         }
         Err(PublishError::Invalid(msg)) => json_error(stream, headers, 422, &msg),
@@ -295,7 +311,12 @@ fn handle_publish(
     }
 }
 
-fn handle_restore(stream: &mut TcpStream, headers: &HashMap<String, String>, store: &Arc<Store>) {
+fn handle_restore(
+    stream: &mut TcpStream,
+    headers: &HashMap<String, String>,
+    store: &Arc<Store>,
+    wp: &Arc<WpStore>,
+) {
     let slug = headers.get("x-slug").cloned().unwrap_or_default();
     if !valid_slug(&slug) {
         return json_error(stream, headers, 400, "invalid slug");
@@ -303,7 +324,8 @@ fn handle_restore(stream: &mut TcpStream, headers: &HashMap<String, String>, sto
     let key = headers.get("x-edit-key").map(|s| s.as_str());
     match store.restore(&slug, key) {
         Ok(bundle) => {
-            let body = publish_json(&bundle, None);
+            let report = sync_if_configured(wp, &bundle);
+            let body = publish_json(&bundle, None, report.as_ref());
             http::send_response(stream, 200, JSON, body.as_bytes(), CacheClass::NoStore, headers, false)
         }
         Err(PublishError::WrongKey) => json_error(stream, headers, 403, "that edit key does not open this slug"),
@@ -316,7 +338,11 @@ fn handle_restore(stream: &mut TcpStream, headers: &HashMap<String, String>, sto
     }
 }
 
-fn publish_json(bundle: &store::Bundle, edit_key: Option<&str>) -> String {
+fn publish_json(
+    bundle: &store::Bundle,
+    edit_key: Option<&str>,
+    report: Option<&wordpress::SyncReport>,
+) -> String {
     let files: Vec<String> = bundle
         .parsed
         .files
@@ -326,15 +352,220 @@ fn publish_json(bundle: &store::Bundle, edit_key: Option<&str>) -> String {
     let key_field = edit_key
         .map(|k| format!(",\"edit_key\":\"{}\"", http::json_escape(k)))
         .unwrap_or_default();
+    let wp_field = report
+        .map(|r| format!(",\"wordpress\":{}", r.to_json()))
+        .unwrap_or_default();
     format!(
-        "{{\"ok\":true,\"slug\":\"{}\",\"version\":{},\"published_at\":{},\"url\":\"/b/{}/\",\"files\":[{}]{}}}",
+        "{{\"ok\":true,\"slug\":\"{}\",\"version\":{},\"published_at\":{},\"url\":\"/b/{}/\",\"files\":[{}]{}{}}}",
         http::json_escape(&bundle.slug),
         bundle.version,
         bundle.published_at,
         http::json_escape(&bundle.slug),
         files.join(","),
-        key_field
+        key_field,
+        wp_field
     )
+}
+
+// ——— WordPress ———
+
+/// The push that rides a publish. A restore rides it too: a restore
+/// changes what is published, and WordPress follows the published
+/// state — the bundle is the source of truth either way. Runs only
+/// when a connection is saved for the bundle, and never fails the
+/// publish it rides: the sync records its own failures per file.
+fn sync_if_configured(wp: &WpStore, bundle: &store::Bundle) -> Option<wordpress::SyncReport> {
+    let settings = wp.load_settings(&bundle.slug)?;
+    Some(wordpress::sync_bundle(wp, bundle, &settings))
+}
+
+/// The bundle, when the supplied key opens it — the same check
+/// publish and restore run, shared by the WordPress endpoints.
+fn key_opens(store: &Store, slug: &str, supplied: Option<&str>) -> Option<Arc<store::Bundle>> {
+    let bundle = store.get(slug)?;
+    let supplied_hash = sha256_hex(supplied.unwrap_or("").as_bytes());
+    if constant_time_eq(supplied_hash.as_bytes(), bundle.key_sha256.as_bytes()) {
+        Some(bundle)
+    } else {
+        None
+    }
+}
+
+/// The key gate for the WordPress endpoints, answering in the same
+/// words as publish: 404 when there is no bundle, 403 when the key
+/// does not open it. On success, the bundle.
+fn wp_gate(
+    stream: &mut TcpStream,
+    headers: &HashMap<String, String>,
+    store: &Arc<Store>,
+    slug: &str,
+) -> Option<Arc<store::Bundle>> {
+    let key = headers.get("x-edit-key").map(|s| s.as_str());
+    match key_opens(store, slug, key) {
+        Some(bundle) => Some(bundle),
+        None => {
+            if store.get(slug).is_none() {
+                json_error(stream, headers, 404, "no such bundle — release it first, then connect WordPress");
+            } else {
+                json_error(stream, headers, 403, "that edit key does not open this slug");
+            }
+            None
+        }
+    }
+}
+
+/// The settings as the API may show them: everything except the
+/// password, which is only ever reported as present.
+fn wp_settings_json(wp: &WpStore, slug: &str, settings: &wordpress::WpSettings) -> String {
+    let state = wp.load_state(slug);
+    let last = state
+        .last
+        .as_ref()
+        .map(|r| r.to_json())
+        .unwrap_or_else(|| "null".to_string());
+    format!(
+        "{{\"ok\":true,\"configured\":true,\"site\":\"{}\",\"user\":\"{}\",\"password_set\":true,\"mapped_posts\":{},\"last_sync\":{}}}",
+        http::json_escape(&settings.site),
+        http::json_escape(&settings.user),
+        state.map.len(),
+        last
+    )
+}
+
+const WP_BODY_CAP: usize = 64 * 1024;
+
+/// Save (or, with an empty site, remove) a bundle's WordPress
+/// connection. Body is a small JSON object: site, user, password.
+/// An empty password keeps the one already stored.
+fn handle_wp_save(
+    stream: &mut TcpStream,
+    reader: &mut BufReader<TcpStream>,
+    headers: &HashMap<String, String>,
+    store: &Arc<Store>,
+    wp: &Arc<WpStore>,
+) {
+    let slug = headers.get("x-slug").cloned().unwrap_or_default();
+    if !valid_slug(&slug) {
+        return json_error(stream, headers, 400, "invalid slug");
+    }
+    let body = match http::read_body(reader, headers, WP_BODY_CAP) {
+        Some(b) => b,
+        None => return json_error(stream, headers, 413, "settings larger than the limit"),
+    };
+    if wp_gate(stream, headers, store, &slug).is_none() {
+        return;
+    }
+    let text = String::from_utf8_lossy(&body);
+    let site_raw = wordpress::json_string_field(&text, "site").unwrap_or_default();
+    if site_raw.trim().is_empty() {
+        // An empty site address disconnects: the settings and the
+        // bookkeeping go. The posts on WordPress are untouched.
+        return match wp.clear(&slug) {
+            Ok(()) => {
+                let body = "{\"ok\":true,\"configured\":false}";
+                http::send_response(stream, 200, JSON, body.as_bytes(), CacheClass::NoStore, headers, false)
+            }
+            Err(e) => {
+                eprintln!("markdown-wizard: wordpress disconnect {slug} failed: {e}");
+                json_error(stream, headers, 500, "the disconnect could not be stored")
+            }
+        };
+    }
+    let site = match wordpress::clean_site_url(&site_raw) {
+        Ok(s) => s,
+        Err(msg) => return json_error(stream, headers, 422, &msg),
+    };
+    let user_raw = wordpress::json_string_field(&text, "user").unwrap_or_default();
+    let user = match wordpress::clean_user(&user_raw) {
+        Ok(u) => u,
+        Err(msg) => return json_error(stream, headers, 422, &msg),
+    };
+    let password_field = wordpress::json_string_field(&text, "password").unwrap_or_default();
+    let password = if !password_field.is_empty() {
+        if password_field.chars().any(|c| c.is_control()) {
+            return json_error(stream, headers, 422, "the application password has unexpected characters in it");
+        }
+        password_field
+    } else {
+        match wp.load_settings(&slug) {
+            Some(existing) => existing.password,
+            None => {
+                return json_error(
+                    stream,
+                    headers,
+                    422,
+                    "an application password is needed — mint one in your WordPress profile (Users → Profile → Application Passwords) and paste it here",
+                )
+            }
+        }
+    };
+    let settings = wordpress::WpSettings {
+        site,
+        user,
+        password,
+    };
+    match wp.save_settings(&slug, &settings) {
+        Ok(()) => {
+            let body = wp_settings_json(wp, &slug, &settings);
+            http::send_response(stream, 200, JSON, body.as_bytes(), CacheClass::NoStore, headers, false)
+        }
+        Err(e) => {
+            eprintln!("markdown-wizard: wordpress settings {slug} failed: {e}");
+            json_error(stream, headers, 500, "the settings could not be stored")
+        }
+    }
+}
+
+/// Read a bundle's WordPress connection back — never the password.
+fn handle_wp_get(
+    stream: &mut TcpStream,
+    headers: &HashMap<String, String>,
+    store: &Arc<Store>,
+    wp: &Arc<WpStore>,
+    slug: &str,
+    head_only: bool,
+) {
+    if !valid_slug(slug) {
+        return json_error(stream, headers, 400, "invalid slug");
+    }
+    if wp_gate(stream, headers, store, slug).is_none() {
+        return;
+    }
+    match wp.load_settings(slug) {
+        Some(settings) => {
+            let body = wp_settings_json(wp, slug, &settings);
+            http::send_response(stream, 200, JSON, body.as_bytes(), CacheClass::NoStore, headers, head_only)
+        }
+        None => {
+            let body = "{\"ok\":true,\"configured\":false}";
+            http::send_response(stream, 200, JSON, body.as_bytes(), CacheClass::NoStore, headers, head_only)
+        }
+    }
+}
+
+/// Re-push the current published bundle without re-publishing —
+/// the retry the publish result offers when a file failed.
+fn handle_wp_sync(
+    stream: &mut TcpStream,
+    headers: &HashMap<String, String>,
+    store: &Arc<Store>,
+    wp: &Arc<WpStore>,
+) {
+    let slug = headers.get("x-slug").cloned().unwrap_or_default();
+    if !valid_slug(&slug) {
+        return json_error(stream, headers, 400, "invalid slug");
+    }
+    let bundle = match wp_gate(stream, headers, store, &slug) {
+        Some(b) => b,
+        None => return,
+    };
+    let settings = match wp.load_settings(&slug) {
+        Some(s) => s,
+        None => return json_error(stream, headers, 422, "WordPress is not connected for this bundle"),
+    };
+    let report = wordpress::sync_bundle(wp, &bundle, &settings);
+    let body = format!("{{\"ok\":true,\"wordpress\":{}}}", report.to_json());
+    http::send_response(stream, 200, JSON, body.as_bytes(), CacheClass::NoStore, headers, false)
 }
 
 /// Everything under `/b/`: a bundle's public life.

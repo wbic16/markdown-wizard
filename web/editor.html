@@ -291,11 +291,11 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
   word-break: break-all;
 }
 .field-label { font-size: 0.74rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); margin: 1.6rem 0 0.3rem; }
-.release-inner input[type="text"] {
+.release-inner input[type="text"], .release-inner input[type="password"] {
   width: 100%; font-family: var(--mono); font-size: 1.05rem; color: var(--ink);
   background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 0.55rem 0.7rem;
 }
-.release-inner input[type="text"]:focus { outline: none; border-color: var(--accent); }
+.release-inner input[type="text"]:focus, .release-inner input[type="password"]:focus { outline: none; border-color: var(--accent); }
 #releaseGo {
   margin-top: 2.2rem; background: var(--accent); color: var(--on-accent); border: 1px solid var(--accent);
   font-family: var(--serif); font-size: 1.15rem; border-radius: 8px; padding: 0.7rem 2rem;
@@ -306,6 +306,21 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
 .quiet-action { font-size: 0.88rem; color: var(--faint); }
 #liveBlock { display: none; margin-top: 2rem; }
 #liveBlock .live-url { font-family: var(--mono); font-size: 1.15rem; }
+#wpSection { margin-top: 2.6rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+#wpSection h2 { font-family: var(--serif); font-weight: 600; font-size: 1.3rem; margin: 0 0 0.3rem; }
+.wp-note { color: var(--soft); font-size: 0.92rem; line-height: 1.5; margin: 0.5rem 0; }
+#wpSave {
+  border: 1px solid var(--accent); color: var(--accent); border-radius: 6px;
+  padding: 0.45rem 1rem; font-family: var(--serif); font-size: 1rem; background: var(--card);
+}
+.wp-actions { margin-top: 1rem; display: flex; gap: 1.2rem; align-items: center; }
+#wpMsg { font-family: var(--serif); font-size: 1rem; margin-top: 0.9rem; }
+#wpMsg.err { color: var(--err); }
+#wpResults { list-style: none; margin: 0.6rem 0 0; padding: 0; font-size: 0.95rem; }
+#wpResults li { padding: 0.32rem 0; border-bottom: 1px solid var(--line); display: flex; gap: 0.7rem; align-items: baseline; }
+#wpResults .wp-path { font-family: var(--mono); font-size: 0.82rem; }
+#wpResults .wp-out { color: var(--soft); }
+#wpResults .wp-out.failed { color: var(--err); }
 </style>
 </head>
 <body>
@@ -422,6 +437,25 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
     <div id="restoreRow" style="display:none;margin-top:2.6rem;border-top:1px solid var(--line);padding-top:1rem">
       <span class="quiet-action">Something off? The previous version is kept.</span>
       <button class="quiet-action" id="restoreBtn" style="text-decoration:underline">Restore the previous version</button>
+    </div>
+
+    <div id="wpSection">
+      <h2>WordPress</h2>
+      <p class="wp-note">Connect a self-hosted WordPress site and every release is posted there too — each file a post, updated in place when you release again. Removing a file here does not remove its post on WordPress; the post is left as it is.</p>
+      <p class="field-label">WordPress site address</p>
+      <input type="text" id="wpSite" placeholder="https://your-site.example" spellcheck="false" autocomplete="off">
+      <p class="field-label">WordPress username</p>
+      <input type="text" id="wpUser" placeholder="The user the posts will belong to" spellcheck="false" autocomplete="off">
+      <p class="field-label">Application password</p>
+      <input type="password" id="wpPassword" placeholder="Mint one under Users → Profile → Application Passwords" autocomplete="off">
+      <p class="wp-note">Connect as an Editor or Administrator — WordPress quietly strips some formatting from posts sent by an Author. The password is kept on this server only and is never shown again. WordPress.com-hosted sites connect a different way, which isn't supported yet.</p>
+      <div class="wp-actions">
+        <button id="wpSave">Save the connection</button>
+        <button class="quiet-action" id="wpSyncBtn" style="display:none;text-decoration:underline">Send to WordPress now</button>
+        <button class="quiet-action" id="wpDisconnect" style="display:none;text-decoration:underline">Disconnect</button>
+      </div>
+      <p id="wpMsg"></p>
+      <ul id="wpResults"></ul>
     </div>
   </div>
 </section>
@@ -1305,6 +1339,7 @@ function refreshRelease() {
   document.getElementById("restoreRow").style.display = "none";
   slugMeta = null;
   if (!slug) return;
+  loadWp();
   if (S.keys[slug]) keyInput.value = S.keys[slug];
   fetch(`/api/bundles/${encodeURIComponent(slug)}`)
     .then(r => (r.ok ? r.json() : null))
@@ -1372,6 +1407,10 @@ releaseGo.addEventListener("click", async () => {
     document.getElementById("liveMeta").textContent =
       `Version ${data.version} · ${new Date(data.published_at * 1000).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}` +
       (data.edit_key ? " · Your edit key is saved in this browser — it is the only copy." : "");
+    if (data.wordpress) {
+      document.getElementById("liveMeta").textContent += ` ${wpSummary(data.wordpress)}`;
+      renderWpReport(data.wordpress);
+    }
     refreshRelease();
   } catch (err) {
     releaseMsg.className = "err";
@@ -1400,6 +1439,185 @@ document.getElementById("restoreBtn").addEventListener("click", async () => {
   } catch (err) {
     releaseMsg.className = "err";
     releaseMsg.textContent = err.message;
+  }
+});
+
+/* ════════════════ WordPress ════════════════
+   The connection belongs to the bundle and is held by the server
+   under the bundle's edit key; this browser only ever sends the
+   application password once, at save time, and never sees it again.
+   The sync result — per file: created, updated, or failed with the
+   site's own words — arrives with the publish result and is also
+   kept server-side, so reopening this screen shows the last run. */
+const wpSite = document.getElementById("wpSite");
+const wpUser = document.getElementById("wpUser");
+const wpPassword = document.getElementById("wpPassword");
+const wpMsg = document.getElementById("wpMsg");
+const wpResults = document.getElementById("wpResults");
+const wpSave = document.getElementById("wpSave");
+const wpSyncBtn = document.getElementById("wpSyncBtn");
+const wpDisconnect = document.getElementById("wpDisconnect");
+
+function wpKey() {
+  const slug = slugInput.value.trim().toLowerCase();
+  return { slug, key: S.keys[slug] || keyInput.value.trim() || null };
+}
+function wpSummary(report) {
+  if (!report || !report.results) return "";
+  const n = { created: 0, updated: 0, failed: 0 };
+  for (const r of report.results) n[r.outcome] = (n[r.outcome] || 0) + 1;
+  const parts = [];
+  if (n.created) parts.push(`${n.created} new post${n.created > 1 ? "s" : ""}`);
+  if (n.updated) parts.push(`${n.updated} updated`);
+  if (n.failed) parts.push(`${n.failed} failed`);
+  return parts.length ? `WordPress: ${parts.join(", ")}.` : "WordPress: nothing to send.";
+}
+function renderWpReport(report) {
+  wpResults.innerHTML = "";
+  if (!report) return;
+  let failed = 0;
+  for (const r of report.results || []) {
+    if (r.outcome === "failed") failed++;
+    const li = document.createElement("li");
+    const p = document.createElement("span");
+    p.className = "wp-path";
+    p.textContent = r.path;
+    const o = document.createElement("span");
+    o.className = "wp-out" + (r.outcome === "failed" ? " failed" : "");
+    o.textContent = r.outcome === "failed" ? `failed — ${r.error || ""}` : r.outcome;
+    li.append(p, o);
+    if (r.link) {
+      const a = document.createElement("a");
+      a.href = r.link;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = "view";
+      a.style.color = "var(--accent)";
+      li.append(a);
+    }
+    wpResults.append(li);
+  }
+  for (const path of report.dropped || []) {
+    const li = document.createElement("li");
+    const p = document.createElement("span");
+    p.className = "wp-path";
+    p.textContent = path;
+    const o = document.createElement("span");
+    o.className = "wp-out";
+    o.textContent = "no longer sent — its post stays on WordPress as it is";
+    li.append(p, o);
+    wpResults.append(li);
+  }
+  // The sync button is the retry when a file failed.
+  wpSyncBtn.textContent = failed ? "Retry the WordPress sync" : "Send to WordPress now";
+}
+async function loadWp() {
+  const { slug, key } = wpKey();
+  wpSyncBtn.style.display = "none";
+  wpDisconnect.style.display = "none";
+  wpMsg.className = "";
+  wpMsg.textContent = "";
+  wpResults.innerHTML = "";
+  if (!slug || !key) return;
+  try {
+    const r = await fetch(`/api/wordpress/${encodeURIComponent(slug)}`, {
+      headers: { "X-Edit-Key": key },
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.configured) return;
+    wpSite.value = data.site || "";
+    wpUser.value = data.user || "";
+    wpPassword.value = "";
+    wpPassword.placeholder = "Saved on the server — leave empty to keep it";
+    wpSyncBtn.style.display = "";
+    wpDisconnect.style.display = "";
+    if (data.last_sync) {
+      wpMsg.textContent =
+        `Last sent ${new Date(data.last_sync.at * 1000).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}. ` +
+        wpSummary(data.last_sync);
+      renderWpReport(data.last_sync);
+    }
+  } catch (e) {}
+}
+wpSave.addEventListener("click", async () => {
+  const { slug, key } = wpKey();
+  wpMsg.className = "";
+  if (!slug || !key) {
+    wpMsg.className = "err";
+    wpMsg.textContent = "Release this bundle once first — the connection attaches to the published bundle, under its edit key.";
+    return;
+  }
+  const site = wpSite.value.trim();
+  // The WordPress.com word, early and in place; the server holds the same line.
+  try {
+    const host = new URL(site).hostname.toLowerCase();
+    if (host === "wordpress.com" || host.endsWith(".wordpress.com")) {
+      wpMsg.className = "err";
+      wpMsg.textContent = "WordPress.com-hosted sites connect a different way (an OAuth2 sign-in), which isn't supported yet — this connection is for self-hosted WordPress.";
+      return;
+    }
+  } catch (e) { /* not an address at all — the server will say so plainly */ }
+  wpMsg.textContent = "Saving…";
+  try {
+    const r = await fetch("/api/wordpress", {
+      method: "POST",
+      headers: { "X-Slug": slug, "X-Edit-Key": key, "Content-Type": "application/json" },
+      body: JSON.stringify({ site, user: wpUser.value.trim(), password: wpPassword.value }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `the server answered ${r.status}`);
+    wpPassword.value = "";
+    wpPassword.placeholder = "Saved on the server — leave empty to keep it";
+    wpSyncBtn.style.display = "";
+    wpDisconnect.style.display = "";
+    wpMsg.textContent = "Connected. The next release will also post to WordPress — or send the current one now.";
+  } catch (err) {
+    wpMsg.className = "err";
+    wpMsg.textContent = err.message;
+  }
+});
+wpSyncBtn.addEventListener("click", async () => {
+  const { slug, key } = wpKey();
+  if (!slug || !key) return;
+  wpMsg.className = "";
+  wpMsg.textContent = "Sending to WordPress…";
+  try {
+    const r = await fetch("/api/wordpress/sync", {
+      method: "POST",
+      headers: { "X-Slug": slug, "X-Edit-Key": key },
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `the server answered ${r.status}`);
+    wpMsg.textContent = wpSummary(data.wordpress);
+    renderWpReport(data.wordpress);
+  } catch (err) {
+    wpMsg.className = "err";
+    wpMsg.textContent = err.message;
+  }
+});
+wpDisconnect.addEventListener("click", async () => {
+  const { slug, key } = wpKey();
+  if (!slug || !key) return;
+  wpMsg.className = "";
+  try {
+    const r = await fetch("/api/wordpress", {
+      method: "POST",
+      headers: { "X-Slug": slug, "X-Edit-Key": key, "Content-Type": "application/json" },
+      body: JSON.stringify({ site: "", user: "", password: "" }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `the server answered ${r.status}`);
+    wpSite.value = "";
+    wpUser.value = "";
+    wpPassword.value = "";
+    wpPassword.placeholder = "Mint one under Users → Profile → Application Passwords";
+    wpSyncBtn.style.display = "none";
+    wpDisconnect.style.display = "none";
+    wpResults.innerHTML = "";
+    wpMsg.textContent = "Disconnected. The posts on WordPress stay as they are.";
+  } catch (err) {
+    wpMsg.className = "err";
+    wpMsg.textContent = err.message;
   }
 });
 
@@ -1554,6 +1772,10 @@ async function runSelfTest() {
   check("theme: the toggle stores a choice", themeOverride() === "light");
   cycleTheme(); cycleTheme();
   check("theme: the toggle cycles back to the system", themeOverride() === null);
+  // WordPress: the connection surface is on the release screen.
+  check("wordpress: the connection section is on the release screen",
+    !!document.getElementById("wpSite") && !!document.getElementById("wpUser")
+    && !!document.getElementById("wpPassword") && !!document.getElementById("wpSave"));
   const pass = lines.every(l => l.startsWith("PASS"));
   document.title = pass ? "SELFTEST PASS" : "SELFTEST FAIL";
   document.body.innerHTML = `<pre id="selftest-out">${lines.join("\n")}</pre>`;

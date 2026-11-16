@@ -210,6 +210,58 @@ A generic MCP client config (streamable HTTP, key in the header):
 }
 ```
 
+## WordPress
+
+A bundle can also live on a self-hosted WordPress site. The
+connection is per bundle, held by whoever holds the bundle's edit
+key, and set from the release screen (or `POST /api/wordpress` with
+the key): the site's address, a username, and an application
+password.
+
+The mechanism is the simplest door WordPress offers, per its own
+developer docs: a push to the site's core REST API. On every
+publish, each markdown file's rendered HTML is POSTed to
+`/wp-json/wp/v2/posts` — title from the file's own first line, slug
+from its path (`essays/one.md` becomes the post slug `essays-one`).
+The returned post ID is stored in a per-bundle mapping beside the
+bundle, so a re-publish updates the same posts in place: same
+permalink, no duplicates. The mapping is written as each post is
+answered for, so a crash mid-sync cannot duplicate a post on the
+next run. A file that leaves the bundle is not deleted on
+WordPress — its mapping is dropped and its post is left as it is.
+
+The bundle stays the source of truth: the push runs after the local
+commit, and a WordPress failure never fails a publish. The per-file
+result (created / updated / failed, with the site's own error) is
+recorded with the bundle, returned with the publish result, and
+shown on the release screen, which offers a retry that re-pushes
+without re-publishing (`POST /api/wordpress/sync`).
+
+Prerequisites, all on the WordPress side:
+
+- WordPress >= 5.6 on HTTPS (application passwords only work over
+  HTTPS, or on a site WordPress treats as local). For the same
+  reason this server accepts an `http://` site address only when
+  the site is on this machine.
+- A user who can publish — Editor or Administrator, recommended.
+  WordPress filters post HTML by the sender's capabilities: an
+  Author's posts are silently stripped of some markup (the
+  `unfiltered_html` capability is the line), so an Author-level
+  connection can lose formatting without any error anywhere.
+- An application password for that user, minted once in their
+  profile (Users → Profile → Application Passwords) and pasted into
+  the release screen. No plugin, no registration, no plan.
+
+The password is a credential: it is stored server-side only, in the
+bundle's own directory with owner-only permissions, and is never
+returned by any API (reads report only that one is set), never
+logged, and never part of the bundle, its download, or its feed.
+
+WordPress.com-hosted sites are not supported by this build: their
+door is an OAuth2 sign-in, not an application password, and a
+wordpress.com address is refused at save time with that said
+plainly.
+
 ## What was distilled
 
 This repo is a distillation of two of Will Bickford's, per his
@@ -276,8 +328,11 @@ layer 2 is its discipline, and the discipline is what was taken.
 The dependency set is the whole of what's left: `zip` (reading
 bundles), `pulldown-cmark` (one renderer behind both faces and the
 published pages, so they can never diverge), `sha2` (edit keys,
-ETags), `serde_json` (the MCP endpoint's JSON-RPC — the same crate
-phext-lattice's MCP is built on). The editor page is one self-contained HTML file; its zip
+ETags), `serde_json` (the MCP endpoint's JSON-RPC — the same
+crate phext-lattice's MCP is built on), and `ureq` — the one HTTP
+client, for the WordPress push, which needs TLS; the server side
+stays std-only (phext-notepad's edit-sync runs the same client).
+The editor page is one self-contained HTML file; its zip
 reader/writer is hand-rolled (stored on write, stored + deflate on
 read) over the platform's own streams.
 
