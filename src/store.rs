@@ -41,6 +41,7 @@
 //!                            plus one `stamp` line per file (see below)
 //!   <slug>/prev/bundle.zip   the previous published version
 //!   <slug>/prev/meta.txt     its meta, its own version and date
+//!   <slug>/work/…            the MCP working copy (see work.rs)
 //! A directory whose bundle.zip fails to parse at load is skipped as
 //! uncommitted.
 
@@ -188,6 +189,15 @@ impl Store {
         self.bundles.read().unwrap().get(slug).cloned()
     }
 
+    /// Every published bundle, ordered by slug — the MCP
+    /// `list_bundles` surface.
+    pub fn list(&self) -> Vec<Arc<Bundle>> {
+        let mut out: Vec<Arc<Bundle>> =
+            self.bundles.read().unwrap().values().cloned().collect();
+        out.sort_by(|a, b| a.slug.cmp(&b.slug));
+        out
+    }
+
     pub fn count(&self) -> usize {
         self.bundles.read().unwrap().len()
     }
@@ -266,6 +276,54 @@ impl Store {
             Some(edit_key) => Ok(PublishOutcome::Created { bundle, edit_key }),
             None => Ok(PublishOutcome::Replaced { bundle }),
         }
+    }
+
+    /// First publish with a caller-issued edit key. The MCP working
+    /// copy mints the slug's key when the draft is opened — the
+    /// draft needs a credential before any publish exists — and
+    /// that same key must open the bundle it becomes, so this path
+    /// takes the key's hash from the caller instead of minting one.
+    /// Only valid while the slug is unpublished; the web path
+    /// (`publish`) mints its own key and is unchanged. Everything
+    /// else — the in-memory gate, the commit sequence — is shared.
+    pub fn publish_with_issued_key(
+        &self,
+        slug: &str,
+        zip_bytes: Vec<u8>,
+        key_sha256: String,
+        changed: Option<String>,
+    ) -> Result<Arc<Bundle>, PublishError> {
+        let parsed = parse_bundle(zip_bytes).map_err(PublishError::Invalid)?;
+        if self.get(slug).is_some() {
+            return Err(PublishError::Invalid(format!(
+                "slug {slug} is already published; a re-publish goes through publish"
+            )));
+        }
+        // A first publish: every file is born stamped, first and
+        // last both at this publish - the same stamps the web
+        // publish path gives a first release.
+        let now = now_unix();
+        let file_stamps: HashMap<String, FileStamps> = parsed
+            .files
+            .iter()
+            .map(|f| {
+                (
+                    f.path.clone(),
+                    FileStamps { first_published: now, last_changed: now },
+                )
+            })
+            .collect();
+        let bundle = Arc::new(Bundle {
+            slug: slug.to_string(),
+            parsed,
+            published_at: now,
+            version: 1,
+            changed,
+            key_sha256,
+            file_stamps,
+        });
+        self.commit(slug, &bundle)?;
+        Ok(bundle)
     }
 
     /// Restore the previous published version — the reversibility
@@ -358,7 +416,7 @@ fn io_err(e: std::io::Error) -> PublishError {
     PublishError::Io(e.to_string())
 }
 
-fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut f = fs::File::create(path)?;
     f.write_all(bytes)?;
     f.sync_all()
@@ -368,7 +426,7 @@ fn sync_file(path: &Path) -> std::io::Result<()> {
     fs::File::open(path)?.sync_all()
 }
 
-fn sync_dir(path: &Path) -> std::io::Result<()> {
+pub(crate) fn sync_dir(path: &Path) -> std::io::Result<()> {
     fs::File::open(path)?.sync_all()
 }
 

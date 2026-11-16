@@ -171,4 +171,37 @@ else
   note "no headless chrome at $CHROME_BIN — browser legs skipped"
 fi
 
+# ——— the MCP endpoint: an agent session, end to end ———
+# The same endpoint an LLM client drives: initialize, list the
+# tools, stream two writes into a working copy, refuse a wrong
+# key, publish, and read the agent's words back at the public
+# addresses.
+MCP="$BASE/mcp"
+mcp_rpc() { # mcp_rpc <json> [edit-key]
+  if [ -n "${2:-}" ]; then
+    curl -sf -X POST "$MCP" -H 'Content-Type: application/json' -H "X-Edit-Key: $2" -d "$1"
+  else
+    curl -sf -X POST "$MCP" -H 'Content-Type: application/json' -d "$1"
+  fi
+}
+INIT=$(mcp_rpc '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}')
+echo "$INIT" | grep -q '"markdown-wizard"' || fail "MCP initialize did not name the server: $INIT"
+TOOLS=$(mcp_rpc '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
+for t in list_bundles list_files read_file search_bundle write_file publish_bundle; do
+  echo "$TOOLS" | grep -q "\"$t\"" || fail "MCP tools/list is missing $t"
+done
+W1=$(mcp_rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"write_file","arguments":{"slug":"agent-bundle","path":"index.md","content":"# From the Agent\n\nStreamed in over MCP.\n"}}}')
+AGENT_KEY=$(echo "$W1" | python3 -c 'import json,sys; print(json.loads(json.loads(sys.stdin.read())["result"]["content"][0]["text"])["edit_key"])')
+[ -n "$AGENT_KEY" ] || fail "the first MCP write did not mint an edit key: $W1"
+W2=$(mcp_rpc '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"write_file","arguments":{"slug":"agent-bundle","path":"notes/deep.md","content":"# Deep Note\n\nThe agent was here.\n"}}}' "$AGENT_KEY")
+echo "$W2" | grep -q '"isError":false' || fail "the second MCP write failed: $W2"
+BAD=$(mcp_rpc '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"write_file","arguments":{"slug":"agent-bundle","path":"index.md","content":"# Hijack\n","edit_key":"not-the-key"}}}')
+echo "$BAD" | grep -q '"isError":true' || fail "a wrong-key MCP write was not refused: $BAD"
+PUB=$(mcp_rpc '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"publish_bundle","arguments":{"slug":"agent-bundle","changed":"Agent release"}}}' "$AGENT_KEY")
+echo "$PUB" | grep -qF '\"version\": 1' || fail "the MCP publish did not land at version 1: $PUB"
+printf '# Deep Note\n\nThe agent was here.\n' > "$WORK/agent-deep.md"
+curl -sf "$BASE/b/agent-bundle/notes/deep.md" -o "$WORK/agent-deep-got.md" || fail "the agent's file is not public"
+cmp "$WORK/agent-deep.md" "$WORK/agent-deep-got.md" || fail "the public bytes differ from the agent's write"
+curl -sf "$BASE/b/agent-bundle/notes/deep" | grep -q 'The agent was here.' || fail "the reading view lacks the agent's words"
+
 echo "E2E OK"

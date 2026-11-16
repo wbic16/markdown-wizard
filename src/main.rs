@@ -15,9 +15,11 @@
 
 mod bundle;
 mod http;
+mod mcp;
 mod render;
 mod rss;
 mod store;
+mod work;
 
 use std::collections::HashMap;
 use std::io::BufReader;
@@ -29,6 +31,7 @@ use std::time::Duration;
 use bundle::{is_markdown_path, is_vault_path, valid_bundle_path, valid_slug, MAX_ZIP_BYTES};
 use http::{CacheClass, HTML, JSON, TEXT};
 use store::{PublishError, PublishOutcome, Store};
+use work::WorkStore;
 
 const EDITOR_HTML: &str = include_str!("../web/editor.html");
 const FAVICON_SVG: &str = include_str!("../web/favicon.svg");
@@ -92,6 +95,13 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let work = match WorkStore::open(cfg.dir.clone()) {
+        Ok(w) => Arc::new(w),
+        Err(e) => {
+            eprintln!("markdown-wizard: cannot open working copies in {}: {e}", cfg.dir.display());
+            std::process::exit(1);
+        }
+    };
     let listener = TcpListener::bind(format!("{}:{}", cfg.host, cfg.port)).unwrap_or_else(|e| {
         eprintln!("markdown-wizard: cannot bind {}:{}: {e}", cfg.host, cfg.port);
         std::process::exit(1);
@@ -108,10 +118,11 @@ fn main() {
         match stream {
             Ok(stream) => {
                 let store = store.clone();
+                let work = work.clone();
                 std::thread::spawn(move || {
                     let mut stream = stream;
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-                    handle(&mut stream, &store);
+                    handle(&mut stream, &store, &work);
                 });
             }
             Err(_) => continue,
@@ -130,7 +141,7 @@ fn public_base(headers: &HashMap<String, String>) -> String {
     format!("{scheme}://{host}")
 }
 
-fn handle(stream: &mut TcpStream, store: &Arc<Store>) {
+fn handle(stream: &mut TcpStream, store: &Arc<Store>, work: &Arc<WorkStore>) {
     let cloned = match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
@@ -172,6 +183,11 @@ fn handle(stream: &mut TcpStream, store: &Arc<Store>) {
         }
         ("POST", "/api/publish") => handle_publish(stream, &mut reader, &headers, store),
         ("POST", "/api/restore") => handle_restore(stream, &headers, store),
+        // The MCP endpoint: POST is the whole transport; any other
+        // method is answered inside, as a JSON 405 (see mcp.rs).
+        ("POST", "/mcp" | "/mcp/") | ("GET" | "HEAD", "/mcp" | "/mcp/") => {
+            mcp::handle_mcp(stream, &mut reader, &method, &headers, store, work)
+        }
         ("GET" | "HEAD", p) if p.starts_with("/api/bundles/") => {
             let slug = &p["/api/bundles/".len()..];
             match store.get(slug) {

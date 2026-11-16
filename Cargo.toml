@@ -19,9 +19,14 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 # Edit-key hashing and strong ETags (the phext-edit response pattern).
 sha2 = "0.10"
+# The MCP endpoint is JSON-RPC; serde_json is the JSON layer
+# phext-lattice's own MCP server (PR #41) is built on — the same
+# crate, distilled the same way, Value API and all.
+serde_json = { version = "1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3"
+serde_json = "1"
 
 [[bin]]
 name = "markdown-wizard"

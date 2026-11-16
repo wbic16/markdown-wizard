@@ -100,11 +100,93 @@ public URL rendered large *before* you commit, an optional one-line
 | `/b/<slug>.zip` | The bundle itself, to take away |
 | `/b/<slug>/feed.xml` | The bundle's RSS 2.0 feed, from the published snapshot only |
 | `/b/<slug>/vault/…` | Never served. The vault is private by structure |
+| `POST /mcp` | The MCP endpoint for agent clients (next section) |
 
 Inside a bundle, a relative link to `other.md` walks the reading
 view; every reading page names its own source in its footer ("read
 the source — the pattern"). Raw HTML in a markdown file is shown as
 text, never executed.
+
+## Agents (MCP)
+
+An LLM client can write here too. The server speaks the Model
+Context Protocol at `POST /mcp` — the same native MCP surface
+edit.phext.io runs (phext-lattice PR #41), distilled to this
+server's scale: JSON-RPC over a single POST, `initialize`,
+`tools/list`, `tools/call`, batches answered as arrays,
+notifications answered with silence. POST is the whole transport;
+a GET probe gets a JSON 405 that says so.
+
+The bundle is the unit, exactly as on the web; files are the
+addresses inside it. Six tools:
+
+| Tool | What it does |
+| --- | --- |
+| `list_bundles` | The slugs this server holds, with version, file count, and whether a working copy exists |
+| `list_files` | A bundle's file tree — paths, sizes, markdown flags (pass `draft: true` with the edit key to see the working copy instead) |
+| `read_file` | One file's text, from the published bundle or (`draft: true`) the working copy |
+| `search_bundle` | Case-insensitive substring search across a bundle's files, returning path + matching lines |
+| `write_file` | Create or replace one file in the slug's working copy |
+| `publish_bundle` | Commit the working copy — the same atomic publish as the web flow, with the same "What changed?" line |
+
+**The working copy.** The web editor is local-first: a human's
+drafts live in their browser until release. An agent has no
+browser, so its drafts live server-side, one working copy per slug,
+under `<data>/<slug>/work/`. The first `write_file` to a slug opens
+the copy — seeded from the published bundle, or empty for a fresh
+slug — and every write lands there, persisted with the store's own
+durability profile. Nothing an agent writes is public until
+`publish_bundle`, and a publish is the store's ordinary commit:
+agent edits and human edits meet at that one commit point, never
+in a half-published state. The copy remembers which published
+version it was seeded from (its *base*); if the bundle has moved
+since — a human re-published meanwhile — the publish is refused as
+stale rather than overwriting the newer release, and the draft is
+kept. After a successful publish the copy re-bases onto the new
+version, so an agent session can keep writing.
+
+**Auth.** The bundle's edit key is the credential, the same one
+the web flow issues. `write_file` and `publish_bundle` require it;
+so do reads of a working copy (`draft: true`). It travels as the
+`X-Edit-Key` header on the MCP request, or as an `edit_key`
+argument on the individual call — the argument wins. Reads of
+published bundles are public, matching the site's own posture, and
+the vault is excluded from them entirely: a vault path answers
+exactly as a missing file does. One consequence of the model: the
+first write to a *fresh* slug is what claims it, so that write's
+result carries the newly minted edit key — shown once, like the
+web's first release. Keep it; every later write needs it. A wrong
+key is a clean tool error (`isError`), never a panic and never a
+partial write.
+
+A minimal session, by hand:
+
+```
+curl -X POST https://md.phext.io/mcp -H 'Content-Type: application/json' -d '{
+  "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+  "params": {"name": "write_file", "arguments": {
+    "slug": "field-notes", "path": "index.md",
+    "content": "# Field Notes\n\nFirst entry.\n"}}}'
+# → the result carries the slug's edit_key, once. Then, with it:
+curl -X POST https://md.phext.io/mcp -H 'Content-Type: application/json' \
+  -H 'X-Edit-Key: <the key>' -d '{
+  "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+  "params": {"name": "publish_bundle", "arguments": {
+    "slug": "field-notes", "changed": "First entry"}}}'
+```
+
+A generic MCP client config (streamable HTTP, key in the header):
+
+```json
+{
+  "mcpServers": {
+    "markdown-wizard": {
+      "url": "https://md.phext.io/mcp",
+      "headers": { "X-Edit-Key": "<your bundle's edit key>" }
+    }
+  }
+}
+```
 
 ## What was distilled
 
@@ -130,8 +212,16 @@ direction — the smallest faithful extraction of each, not a fork.
   `/api/submissions`' `X-Filename` pattern: publish is
   `POST /api/publish` with `X-Slug`, `X-Edit-Key`, `X-Changed`, and
   the zip as the body.
+- The MCP server, from phext-lattice PR #41's `handle_mcp` in the
+  same file: the stateless POST-only JSON-RPC transport, version
+  negotiation, tool results as JSON text content, errors as
+  `isError` results rather than transport failures — re-pointed
+  from scrolls to bundles and files. PR #42's OAuth 2.1 layer was
+  deliberately *not* carried: at this scale the bundle's edit key
+  is the credential, carried the way the web publish API already
+  carries it.
 - The test style: spawn the server on an ephemeral port and speak
-  raw HTTP at it (`tests/http_e2e.rs`).
+  raw HTTP at it (`tests/http_e2e.rs`, `tests/mcp_e2e.rs`).
 - The deploy shape: a systemd unit and an nginx vhost modeled on
   `deploy/phext-edit.service` and `deploy/nginx-edit.phext.io.conf`.
 
@@ -164,7 +254,8 @@ layer 2 is its discipline, and the discipline is what was taken.
 The dependency set is the whole of what's left: `zip` (reading
 bundles), `pulldown-cmark` (one renderer behind both faces and the
 published pages, so they can never diverge), `sha2` (edit keys,
-ETags). The editor page is one self-contained HTML file; its zip
+ETags), `serde_json` (the MCP endpoint's JSON-RPC — the same crate
+phext-lattice's MCP is built on). The editor page is one self-contained HTML file; its zip
 reader/writer is hand-rolled (stored on write, stored + deflate on
 read) over the platform's own streams.
 
@@ -181,12 +272,15 @@ release screen; `?selftest=1` runs the in-page model tests.
 ## Test it
 
 ```
-cargo test            # unit tests + the raw-HTTP cycle tests
+cargo test            # unit tests + the raw-HTTP cycle tests,
+                      # including a scripted MCP agent session
 scripts/e2e.sh        # the full run against the release binary:
                       # publish → byte-compare → re-publish → restore,
                       # the editor self-test in headless Chromium,
                       # the theme legs over CDP (an emulated OS × the
-                      # stored choice, on both surfaces), and the
+                      # stored choice, on both surfaces), an MCP agent
+                      # session (write → publish → read back at the
+                      # public addresses), and the
                       # screenshots in docs/screenshots/
 ```
 

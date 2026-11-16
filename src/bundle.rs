@@ -97,6 +97,17 @@ pub fn valid_bundle_path(path: &str) -> bool {
 /// Parse and validate a bundle zip. Errors are plain-language strings
 /// the publish API returns verbatim.
 pub fn parse_bundle(zip_bytes: Vec<u8>) -> Result<ParsedBundle, String> {
+    parse_entries(zip_bytes, true)
+}
+
+/// Parse a working-copy archive (see work.rs): the same hygiene and
+/// caps as a published bundle, but a draft may legitimately hold no
+/// markdown yet — the publish gate, not the draft, enforces that.
+pub fn parse_working(zip_bytes: Vec<u8>) -> Result<ParsedBundle, String> {
+    parse_entries(zip_bytes, false)
+}
+
+fn parse_entries(zip_bytes: Vec<u8>, require_markdown: bool) -> Result<ParsedBundle, String> {
     if zip_bytes.len() > MAX_ZIP_BYTES {
         return Err(format!(
             "bundle is {} bytes; the limit is {}",
@@ -158,11 +169,39 @@ pub fn parse_bundle(zip_bytes: Vec<u8>) -> Result<ParsedBundle, String> {
             is_markdown,
         });
     }
-    if files.iter().all(|f| !f.is_markdown) {
+    if require_markdown && files.iter().all(|f| !f.is_markdown) {
         return Err("bundle holds no markdown (.md) files".to_string());
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(ParsedBundle { zip_bytes, files })
+}
+
+/// Serialize files back into a bundle archive — the inverse of
+/// parse_bundle, used for working copies (work.rs). Entries are
+/// stored, never deflated, in path order, so the bytes are
+/// deterministic for a given file set: the same discipline the
+/// editor's hand-rolled writer keeps.
+pub fn build_zip(files: &[BundleFile]) -> Result<Vec<u8>, String> {
+    use std::io::Write as _;
+    let mut sorted: Vec<&BundleFile> = files.iter().collect();
+    sorted.sort_by(|a, b| a.path.cmp(&b.path));
+    let cursor = Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(cursor);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored)
+        .unix_permissions(0o644);
+    for f in sorted {
+        writer
+            .start_file(&f.path, options)
+            .map_err(|e| format!("cannot stage {}: {e}", f.path))?;
+        writer
+            .write_all(&f.bytes)
+            .map_err(|e| format!("cannot write {}: {e}", f.path))?;
+    }
+    let cursor = writer
+        .finish()
+        .map_err(|e| format!("cannot finish the archive: {e}"))?;
+    Ok(cursor.into_inner())
 }
 
 /// A file's incipit: its first heading if it opens with one, else its
