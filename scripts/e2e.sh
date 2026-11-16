@@ -133,6 +133,16 @@ curl -sf -X POST "$BASE/api/restore" -H "X-Slug: e2e-bundle" -H "X-Edit-Key: $KE
 curl -sf "$BASE/b/e2e-bundle/essays/one.md" | grep -q "Second version." || fail "second restore did not return to v2"
 note "restore swaps the two versions cleanly"
 
+# ——— the ways-to-use-it page ———
+curl -sf "$BASE/integrate" | grep -q "https://tluf.org" || fail "integrate page lacks the tluf.org link"
+curl -sf "$BASE/integrate" | grep -q "md.phext.io/mcp" || fail "integrate page lacks the MCP endpoint"
+curl -sf "$BASE/integrate" | grep -q "application password" || fail "integrate page lacks the WordPress steps"
+curl -sf "$BASE/mascot-badge.webp" -o "$WORK/mascot-badge.webp" || fail "the mascot badge is not served"
+head -c 4 "$WORK/mascot-badge.webp" | grep -q "RIFF" || fail "the mascot badge is not the webp"
+curl -sf "$BASE/" | grep -q 'href="/integrate"' || fail "the editor does not link the integrate page"
+curl -sf "$BASE/b/e2e-bundle/" | grep -q 'href="/integrate"' || fail "the bundle index does not link the integrate page"
+note "integrate page served and linked: MCP, WordPress, hosting, tluf.org, the mascot"
+
 # ——— the editor, in a real browser ———
 if [ -x "$CHROME_BIN" ]; then
   "$CHROME_BIN" --no-sandbox --disable-gpu --hide-scrollbars \
@@ -171,6 +181,8 @@ PYEOF
   "$CHROME_BIN" --no-sandbox --disable-gpu --hide-scrollbars \
     --user-data-dir="$WORK/profile-release" --virtual-time-budget=8000 \
     --window-size=1200,1000 --screenshot="$SHOTS/05-release.png" "$BASE/?demo&release=garden-notes" 2>/dev/null
+  "$CHROME_BIN" --no-sandbox --disable-gpu --hide-scrollbars \
+    --window-size=1200,1000 --screenshot="$SHOTS/10-integrate.png" "$BASE/integrate" 2>/dev/null
   note "screenshots in $SHOTS"
 
   # ——— theme legs: an emulated OS, a stored choice, both surfaces ———

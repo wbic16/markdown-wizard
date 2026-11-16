@@ -22,6 +22,12 @@
 //! line — nothing else, and in particular no suggestion; the quiet
 //! word for edit.phext.io lives on the bundle index and in the
 //! editor, nowhere else.
+//!
+//! One more public page stands apart from the bundles: `/integrate`,
+//! the ways-to-use-it page — where a bundle can be handed (an LLM
+//! over MCP, WordPress, the reader's own hosting, the edit.phext.io
+//! vault), kept by the Pencil Puffball and closing with one
+//! sentence of kin for tluf.org.
 
 use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, TagEnd};
 
@@ -292,6 +298,19 @@ footer.colophon a { color: var(--soft); }
 footer.colophon .addr { font-family: var(--mono); font-size: 0.78rem; }
 .crumbs { font-size: 0.84rem; color: var(--faint); margin: 0 0 1.6rem; font-family: var(--serif); font-style: italic; }
 .crumbs a { color: var(--accent); text-decoration: none; }
+.ways-keeper {
+  float: right; width: 7.5rem; height: 7.5rem; object-fit: cover;
+  border-radius: 50%; border: 1px solid var(--line);
+  margin: 0.2rem 0 1rem 1.5rem; background: var(--card);
+}
+.ways h2 { border-top: 1px solid var(--line); padding-top: 1.5rem; margin-top: 2.4rem; }
+.ways h2:first-of-type { border-top: none; padding-top: 0; margin-top: 1.8rem; }
+.ways pre {
+  background: var(--code-bg); color: #eef0ea; border-radius: 8px;
+  padding: 1rem 1.1rem; overflow-x: auto; font-size: 0.85rem; line-height: 1.5;
+}
+.ways pre code { font-family: var(--mono); }
+.ways-close { margin-top: 2.6rem; }
 "#;
 
 /// The quiet suggestion — it lives in exactly two places: the
@@ -386,7 +405,8 @@ pub fn index_page(bundle: &Bundle, base: &str) -> String {
          every release, in your reader, at <span style=\"font-family:var(--mono);font-size:0.85em\">{base}/b/{slug}/feed.xml</span>.</p>\n\
          <footer class=\"colophon\"><p>{}</p><p>{QUIET_LINE}</p>\
          <p>Published from a zip of markdown — the bundle is the document, and \
-         <a href=\"/b/{slug}.zip\">the zip itself</a> is here to take away.</p></footer>",
+         <a href=\"/b/{slug}.zip\">the zip itself</a> is here to take away.</p>\
+         <p><a href=\"/integrate\">Ways to use it</a> — how a bundle travels: to an LLM, to WordPress, to your own hosting.</p></footer>",
         html_escape(&title),
         version_line(bundle),
     );
@@ -457,6 +477,82 @@ pub fn reading_page(bundle: &Bundle, file: &BundleFile) -> String {
         html_escape(&stem),
     );
     shell(&title, &body)
+}
+
+/// The MCP client configuration, exactly as the MCP build's
+/// README documents it — the page shows it verbatim (HTML-escaped
+/// at the call site) so a reader can paste it whole.
+const MCP_CONFIG: &str = r#"{
+  "mcpServers": {
+    "markdown-wizard": {
+      "url": "https://md.phext.io/mcp",
+      "headers": { "X-Edit-Key": "<your bundle's edit key>" }
+    }
+  }
+}"#;
+
+/// The ways-to-use-it page: `/integrate`. A new writer meets the
+/// editor first; this page answers the next question — where a
+/// bundle can go. Four doors, in order: the reader's own LLM over
+/// MCP, their WordPress, their own hosting, and the edit.phext.io
+/// vault for drafts that should travel with them. It closes with
+/// one sentence of kin for tluf.org. It is kept by the Pencil
+/// Puffball, worn once as a round badge in the opening — inside
+/// the hairline ring, the artwork's cream ground reads
+/// deliberately in both themes.
+pub fn integrate_page() -> String {
+    let config = html_escape(MCP_CONFIG);
+    let body = format!(
+        "<div class=\"title-block\"><p class=\"eyebrow\">md.phext.io</p>\
+         <h1 class=\"display\">Ways to use it.</h1></div>\n\
+         <img class=\"ways-keeper\" src=\"/mascot-badge.webp\" width=\"240\" height=\"240\" \
+         alt=\"The Pencil Puffball, keeper of this house — a paper-white puffball in an \
+         indigo cap, an oversized pencil in hand, a page of markdown floating at its side\">\n\
+         <p class=\"lede\">You write markdown. When you release it, it lives at an address \
+         that never moves — the source itself, a reading page woven from it, and a feed — \
+         all from one zip of plain files, and no account is needed to write. What follows \
+         is where a bundle can go from there.</p>\n\
+         <article class=\"ways\">\n\
+         <h2>Your LLM</h2>\n\
+         <p>An agent can hold the pen. This server speaks the Model Context Protocol at \
+         <code>https://md.phext.io/mcp</code>: a client can list a bundle's files, read \
+         and search them, write drafts into a working copy, and publish — the same atomic \
+         release you make by hand. Nothing an agent drafts is public until it publishes.</p>\n\
+         <p>Reads of published bundles are open. Writing asks for the bundle's edit key — \
+         the key your first release showed you, once. Give it to your client in the header:</p>\n\
+         <pre><code>{config}</code></pre>\n\
+         <p>Keep the key as you would a password. It is the only credential there is.</p>\n\
+         <h2>WordPress</h2>\n\
+         <p>If your site runs WordPress, a release can arrive there as posts — each file \
+         at its own permalink, kept in step with the bundle.</p>\n\
+         <ol>\n\
+         <li>In your WordPress profile, mint an application password \
+         (Users → Profile → Application Passwords). It takes a minute, once.</li>\n\
+         <li>Paste your site's address and the application password into the bundle's \
+         WordPress settings. Connect as a user who can publish — Editor or above; \
+         a lesser role loses some markup to WordPress's filter.</li>\n\
+         <li>Release. Releasing again updates the same posts in place — \
+         nothing duplicated, nothing moved.</li>\n\
+         </ol>\n\
+         <p>The markdown stays the source. WordPress keeps the rendering.</p>\n\
+         <h2>Your own hosting</h2>\n\
+         <p>A bundle is a zip, and a zip can live anywhere. Take the whole site away \
+         from the bundle's index — every page pre-rendered as HTML, a PDF of each file, \
+         the raw markdown, and the feed — and put it on any static host: your bucket, \
+         your server, a folder behind your own domain. The addresses are then yours \
+         outright, and this site is only the desk you wrote it at.</p>\n\
+         <h2>Sign in with edit.phext.io</h2>\n\
+         <p>Writing needs no account; drafts live in your browser. If you would rather \
+         they travelled with you, sign in with <a href=\"https://edit.phext.io\">edit.phext.io</a> \
+         and keep your drafts in a phext vault there — the same drafts, reachable wherever \
+         you sign in. The text stays plain markdown; the vault is only a safer drawer.</p>\n\
+         <p class=\"ways-close\">And kin, one door over: <a href=\"https://tluf.org\">tluf.org</a> — \
+         the assayist for the future, sorting what arrives into truth, lies, unknown, \
+         and fiction.</p>\n\
+         </article>\n\
+         <footer class=\"colophon\"><p><a href=\"/\">‹ Back to the editor</a></p></footer>"
+    );
+    shell("Ways to use it — md.phext.io", &body)
 }
 
 /// The 404 page, in the same quiet dress.
@@ -532,6 +628,24 @@ mod tests {
     fn published_pages_carry_the_keeper_favicon() {
         let page = not_found_page("x");
         assert!(page.contains("<link rel=\"icon\" type=\"image/png\" href=\"/favicon.png\">"), "{page}");
+    }
+
+    #[test]
+    fn integrate_page_names_the_doors_and_keeps_the_mascot() {
+        let page = integrate_page();
+        // The four doors, in the page's own words.
+        assert!(page.contains("https://md.phext.io/mcp"));
+        assert!(page.contains("X-Edit-Key"));
+        assert!(page.contains("application password"));
+        assert!(page.contains("Your own hosting"));
+        assert!(page.contains("phext vault"));
+        // One sentence of kin, linked.
+        assert!(page.contains("<a href=\"https://tluf.org\">tluf.org</a>"));
+        // The Pencil Puffball, once, worn as the badge.
+        assert_eq!(page.matches("/mascot-badge.webp").count(), 1);
+        assert!(page.contains("ways-keeper"));
+        // The shell's theme resolution rides along, as on every page.
+        assert!(page.contains("mdwiz.theme"));
     }
 
     #[test]

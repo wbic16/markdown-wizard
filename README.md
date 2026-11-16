@@ -99,6 +99,8 @@ public URL rendered large *before* you commit, an optional one-line
 | Address | What answers |
 | --- | --- |
 | `/` | The editor |
+| `/integrate` | Ways to use it — your LLM (MCP), WordPress, your own hosting, the edit.phext.io door |
+| `/mascot-badge.webp` | The Pencil Puffball's round badge — worn on `/integrate`, beside bundle titles |
 | `/b/<slug>/` | The bundle index: its own `index.md`, rendered, over a numbered tracklist |
 | `/b/<slug>/<path>.md` | The raw markdown itself — the source is the destination |
 | `/b/<slug>/<path>` | The reading view of the same file (extension dropped) |
@@ -111,6 +113,21 @@ Inside a bundle, a relative link to `other.md` walks the reading
 view; every reading page names its own source in its footer ("read
 the source — the pattern"). Raw HTML in a markdown file is shown as
 text, never executed.
+
+## Ways to use it
+
+`/integrate` answers the new writer's next question — where a
+bundle can go. Four doors: an LLM over MCP (`POST /mcp`, the
+bundle's edit key carried in the header), WordPress (an
+application password; posts updated in place on re-release), the
+reader's own hosting (the bundle taken away as a deployable
+static site), and sign-in with edit.phext.io, which keeps drafts
+in a phext vault there. The editor's chrome and side-foot link
+the page, and so does every bundle index's footer. The page
+closes with one sentence of kin for [tluf.org](https://tluf.org)
+and is kept by the Pencil Puffball — the house mascot, served at
+`/mascot-badge.webp` and worn once, as a round badge, in the page's
+opening.
 
 ## Agents (MCP)
 

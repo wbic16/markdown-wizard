@@ -190,6 +190,8 @@ button:hover { color: var(--accent); }
 #pathInput:focus { outline: none; border-bottom-color: var(--accent); }
 #pubAddr { font-family: var(--mono); font-size: 0.74rem; color: var(--faint); margin-left: 0.7rem; }
 #pubAddr a { color: var(--faint); }
+#waysLink { color: var(--faint); font-size: 0.85rem; text-decoration: none; }
+#waysLink:hover { color: var(--accent); text-decoration: underline; }
 .chrome-right { display: flex; align-items: baseline; gap: 1rem; white-space: nowrap; }
 #stateWord { font-family: var(--serif); font-style: italic; color: var(--soft); font-size: 0.92rem; }
 #savedWord { color: var(--faint); font-size: 0.8rem; opacity: 0; transition: opacity 0.8s ease; }
@@ -335,6 +337,7 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
       <span class="keys">⌘K jump · ⌘. scratch · ⌘⇧F focus · ⌘1–9 open a file<br>
       A file may end with <span style="font-family:var(--mono)">&lt;!-- next: … --&gt;</span> — reopening it places your caret on the note.</span>
       Flat files are a fine start. When you want addresses in eleven dimensions, try <a href="https://edit.phext.io">edit.phext.io</a>.
+      <span style="display:block;margin-top:0.5rem">New here? <a href="/integrate">Ways to use it</a> — your LLM, WordPress, your own hosting.</span>
     </div>
   </aside>
 
@@ -350,6 +353,7 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
         <button id="vaultBtn" title="Put this file in the vault">Put in the vault</button>
         <button id="faceToggle">Cloth</button>
         <button id="themeBtn">System</button>
+        <a id="waysLink" href="/integrate" title="Your LLM, WordPress, your own hosting">Ways to use it</a>
         <button id="releaseBtn">Release</button>
       </div>
     </header>

@@ -402,3 +402,42 @@ fn editor_and_public_surfaces_answer() {
     assert_eq!(get(srv.port, "/no-such-place").status, 404);
     assert_eq!(get(srv.port, "/b/no-such-bundle/").status, 404);
 }
+
+#[test]
+fn integrate_page_is_served_linked_and_kept_by_the_mascot() {
+    let srv = start_server();
+    let page = get(srv.port, "/integrate");
+    assert_eq!(page.status, 200);
+    let text = String::from_utf8_lossy(&page.body).into_owned();
+    for needle in [
+        "https://md.phext.io/mcp",
+        "X-Edit-Key",
+        "application password",
+        "Your own hosting",
+        "phext vault",
+        "https://tluf.org",
+    ] {
+        assert!(text.contains(needle), "integrate page lacks {needle}");
+    }
+    // The mascot answers as the webp it is.
+    let mascot = get(srv.port, "/mascot-badge.webp");
+    assert_eq!(mascot.status, 200);
+    assert!(mascot.body.starts_with(b"RIFF"), "mascot is not the webp");
+    assert!(mascot.headers.contains("image/webp"), "mascot served as {}", mascot.headers);
+    // The editor links the page (chrome and side-foot).
+    let home = get(srv.port, "/");
+    assert!(
+        String::from_utf8_lossy(&home.body).contains("href=\"/integrate\""),
+        "editor does not link the integrate page"
+    );
+    // And so does every bundle index's footer.
+    let zip = make_zip(&[("index.md", "# Linked\n"), ("one.md", "# One\n")]);
+    let r = publish(srv.port, "linked", &zip, None, None);
+    assert_eq!(r.status, 201);
+    let index = get(srv.port, "/b/linked/");
+    assert_eq!(index.status, 200);
+    assert!(
+        String::from_utf8_lossy(&index.body).contains("href=\"/integrate\""),
+        "bundle index does not link the integrate page"
+    );
+}

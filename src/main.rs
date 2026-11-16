@@ -165,6 +165,10 @@ fn handle(stream: &mut TcpStream, store: &Arc<Store>, work: &Arc<WorkStore>) {
         ("GET" | "HEAD", "/") => {
             http::send_response(stream, 200, HTML, EDITOR_HTML.as_bytes(), CacheClass::Shell, &headers, head_only)
         }
+        ("GET" | "HEAD", "/integrate") => {
+            let page = render::integrate_page();
+            http::send_response(stream, 200, HTML, page.as_bytes(), CacheClass::Shell, &headers, head_only)
+        }
         ("GET" | "HEAD", "/favicon.svg") | ("GET" | "HEAD", "/favicon.ico") => {
             http::send_response(stream, 200, "image/svg+xml", FAVICON_SVG.as_bytes(), CacheClass::Static, &headers, head_only)
         }
