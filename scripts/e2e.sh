@@ -279,7 +279,7 @@ if [ -x "$CHROME_BIN" ]; then
     --window-size=1600,1000 \
     --dump-dom "$BASE/?selftest=1" > "$WORK/selftest.html" 2>/dev/null
   grep -q "SELFTEST PASS" "$WORK/selftest.html" || { grep -o "FAIL [^<]*" "$WORK/selftest.html" >&2 || true; fail "editor self-test failed"; }
-  note "editor self-test passed (seed, vault, keep-private, silent rename, three states, resumption, hook, filter, count, link, theme, settings)"
+  note "editor self-test passed (seed, vault, keep-private, silent rename, three states, resumption, hook, filter, count, link, theme, settings, two faces)"
 
   "$CHROME_BIN" --no-sandbox --disable-gpu --hide-scrollbars \
     --user-data-dir="$WORK/profile-first" --virtual-time-budget=8000 \
