@@ -74,6 +74,17 @@ VERSION=$(printf '%s' "$RESP" | python3 -c "import json,sys; print(json.load(sys
 [ -n "$KEY" ] || fail "first publish returned no edit key"
 note "published v1, key issued"
 
+# ——— the login rule: all of this happens signed out ———
+# Nothing in this run has an account, a session, or a token of
+# federation: /api/me must say so, and the publish above must
+# have worked anyway. Signing in is a door, never a gate.
+curl -sf "$BASE/api/me" | python3 -c "
+import json, sys
+me = json.load(sys.stdin)
+assert me.get('signed_in') is False, 'the e2e walk was signed in'
+" || fail "the signed-out walk could not be proven"
+note "signed out throughout — and publishing worked anyway"
+
 # ——— read it back ———
 curl -sf "$BASE/b/e2e-bundle/essays/one.md" > "$WORK/got.md"
 printf '# One\n\nFirst version.\n' | cmp - "$WORK/got.md" || fail "raw .md does not match the published source byte for byte"
@@ -268,7 +279,7 @@ if [ -x "$CHROME_BIN" ]; then
     --window-size=1600,1000 \
     --dump-dom "$BASE/?selftest=1" > "$WORK/selftest.html" 2>/dev/null
   grep -q "SELFTEST PASS" "$WORK/selftest.html" || { grep -o "FAIL [^<]*" "$WORK/selftest.html" >&2 || true; fail "editor self-test failed"; }
-  note "editor self-test passed (seed, vault, silent rename, three states, resumption, hook, filter, count, link, theme)"
+  note "editor self-test passed (seed, vault, silent rename, three states, resumption, hook, filter, count, link, theme, settings)"
 
   "$CHROME_BIN" --no-sandbox --disable-gpu --hide-scrollbars \
     --user-data-dir="$WORK/profile-first" --virtual-time-budget=8000 \

@@ -613,7 +613,8 @@ pub fn integrate_page() -> String {
          <li>In your WordPress profile, mint an application password \
          (Users → Profile → Application Passwords). It takes a minute, once.</li>\n\
          <li>Paste your site's address and the application password into the bundle's \
-         WordPress settings. Connect as a user who can publish — Editor or above; \
+         WordPress settings — they live under Settings in the editor, away from the \
+         writing. Connect as a user who can publish — Editor or above; \
          a lesser role loses some markup to WordPress's filter.</li>\n\
          <li>Release. Releasing again updates the same posts in place — \
          nothing duplicated, nothing moved.</li>\n\
@@ -627,15 +628,21 @@ pub fn integrate_page() -> String {
          outright, and this site is only the desk you wrote it at.</p>\n\
          <p>If the host is storage you own — an S3 bucket, an Azure Blob container, \
          a Google Cloud bucket — the copying can be the tool's job: connect it in \
-         the bundle's cloud settings on the release screen, and each release syncs \
+         the bundle's cloud settings under Settings in the editor, and each release syncs \
          the same tree into it, under a prefix you choose. Files that leave the \
          bundle stay in the destination; its website hosting remains yours to \
          configure with the provider.</p>\n\
          <h2>Sign in with edit.phext.io</h2>\n\
-         <p>Writing needs no account; drafts live in your browser. If you would rather \
-         they travelled with you, sign in with <a href=\"https://edit.phext.io\">edit.phext.io</a> \
+         <p>Writing needs no account; drafts live in your browser, and every door above \
+         works signed out. If you would rather they travelled with you, sign in with \
+         <a href=\"https://edit.phext.io\">edit.phext.io</a> \
          and keep your drafts in a phext vault there — the same drafts, reachable wherever \
          you sign in. The text stays plain markdown; the vault is only a safer drawer.</p>\n\
+         <p>A first vault begins as a one-scroll starter file: name the vault here, \
+         download the file, and host it at edit.phext.io/submit under your own sign-in. \
+         Until it is hosted, the vault is a name and a promise — “not hosted yet” is its \
+         designed state, not an error — and nothing waits on it: this desk works the \
+         same either way.</p>\n\
          <p class=\"ways-close\">And kin, one door over: <a href=\"https://tluf.org\">tluf.org</a> — \
          the assayist for the future, sorting what arrives into truth, lies, unknown, \
          and fiction.</p>\n\
@@ -770,6 +777,11 @@ mod tests {
         assert!(page.contains("application password"));
         assert!(page.contains("Your own hosting"));
         assert!(page.contains("phext vault"));
+        // The federation section tells the bootstrap truth: a
+        // first vault is a one-scroll starter file the reader
+        // hosts, and "not hosted yet" is a designed state.
+        assert!(page.contains("one-scroll starter file"));
+        assert!(page.contains("not hosted yet"));
         // One sentence of kin, linked.
         assert!(page.contains("<a href=\"https://tluf.org\">tluf.org</a>"));
         // The Pencil Puffball, once, worn as the badge.

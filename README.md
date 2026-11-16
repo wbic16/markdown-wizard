@@ -78,6 +78,19 @@ Release is one screen: the slug (set once, remembered), the full
 public URL rendered large *before* you commit, an optional one-line
 "What changed?", and one button.
 
+The writing surface carries no plumbing. Connections and their
+kin — the WordPress connection, the edit.phext.io account and its
+vault, and cloud sync — live behind the editor's
+**Settings** button, each in its own panel on the settings screen;
+a publish leaves only a one-line outcome on the release screen,
+with the per-file detail in Settings. New integration panels are
+born in Settings: the panel's markup goes in the settings screen
+(the cloud panel, `#cloudSection`, sits there beside WordPress),
+its loader is called from `openSettings()`, and its configuration
+never goes on the editor or the release screen. Nothing in
+Settings is required — the whole product works signed out, and
+sign-in is offered there and on `/integrate`, never as a gate.
+
 - First release returns an **edit key** — shown once, saved in that
   browser. Re-publishing to the slug requires it; nobody else can
   overwrite your address. The server stores only the key's SHA-256.
@@ -265,8 +278,8 @@ A generic MCP client config (streamable HTTP, key in the header):
 
 A bundle can also live on a self-hosted WordPress site. The
 connection is per bundle, held by whoever holds the bundle's edit
-key, and set from the release screen (or `POST /api/wordpress` with
-the key): the site's address, a username, and an application
+key, and set from Settings in the editor (or `POST /api/wordpress`
+with the key): the site's address, a username, and an application
 password.
 
 The mechanism is the simplest door WordPress offers, per its own
@@ -285,8 +298,9 @@ The bundle stays the source of truth: the push runs after the local
 commit, and a WordPress failure never fails a publish. The per-file
 result (created / updated / failed, with the site's own error) is
 recorded with the bundle, returned with the publish result, and
-shown on the release screen, which offers a retry that re-pushes
-without re-publishing (`POST /api/wordpress/sync`).
+summarized as one quiet line on the release screen; the per-file
+detail and the retry that re-pushes without re-publishing live in
+Settings (`POST /api/wordpress/sync`).
 
 Prerequisites, all on the WordPress side:
 
@@ -301,7 +315,7 @@ Prerequisites, all on the WordPress side:
   connection can lose formatting without any error anywhere.
 - An application password for that user, minted once in their
   profile (Users → Profile → Application Passwords) and pasted into
-  the release screen. No plugin, no registration, no plan.
+  Settings. No plugin, no registration, no plan.
 
 The password is a credential: it is stored server-side only, in the
 bundle's own directory with owner-only permissions, and is never
@@ -396,8 +410,8 @@ A bundle can also live in object storage its author owns — the
 "deploy on your own" route, made automatic. One engine serves
 three providers: **Amazon S3**, **Microsoft Azure Blob Storage**,
 and **Google Cloud Storage**. The connection is per bundle, held
-by whoever holds the bundle's edit key, and set from the release
-screen (or `POST /api/cloud` with the key): the provider, its
+by whoever holds the bundle's edit key, and set from Settings
+(or `POST /api/cloud` with the key): the provider, its
 bucket or container, an optional prefix, and its credential.
 
 On every publish, the bundle's deployable tree — the same tree
@@ -417,9 +431,10 @@ The bundle stays the source of truth: the sync runs after the
 local commit, and a provider failure never fails a publish. The
 per-file result (uploaded / unchanged / failed, with the
 provider's own error) is recorded with the bundle, returned with
-the publish result, and shown on the release screen, which offers
-a retry that re-syncs without re-publishing
-(`POST /api/cloud/sync`).
+the publish result, and summarized as one quiet line in the
+release screen's live line; the per-file detail lives in
+Settings, which offers a retry that re-syncs without
+re-publishing (`POST /api/cloud/sync`).
 
 The transports are each provider's own first door, over `ureq`,
 the tree's one HTTP client:

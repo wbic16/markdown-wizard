@@ -198,7 +198,7 @@ button:hover { color: var(--accent); }
 #savedWord.show { opacity: 1; transition: opacity 0.15s ease; }
 #vaultWord { color: var(--faint); font-size: 0.8rem; margin-right: 0.2rem; }
 #vaultScreen {
-  display: none; position: fixed; inset: 0; background: var(--paper); z-index: 30;
+  display: none; position: fixed; inset: 0; background: var(--paper); z-index: 31;
   overflow-y: auto;
 }
 #vaultScreen.open { display: block; }
@@ -208,6 +208,23 @@ button:hover { color: var(--accent); }
 }
 #vaultMsg { margin-top: 1.2rem; font-family: var(--serif); font-size: 1.05rem; }
 #vaultMsg.err { color: var(--err); }
+/* ————— settings: where the complexity lives —————
+   Everything that is not writing — connections, sync plumbing,
+   the account and the vault's management — sits behind one
+   Settings button in the chrome, on its own screen, in panels.
+   The writing surface carries none of it. */
+#settingsScreen {
+  display: none; position: fixed; inset: 0; background: var(--paper); z-index: 30;
+  overflow-y: auto;
+}
+#settingsScreen.open { display: block; }
+.settings-panel { margin-top: 2.6rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+.settings-panel h2 { font-family: var(--serif); font-weight: 600; font-size: 1.3rem; margin: 0 0 0.3rem; }
+#settingsScreen input[type="text"], #settingsScreen input[type="password"] {
+  width: 100%; font-family: var(--mono); font-size: 1.05rem; color: var(--ink);
+  background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 0.55rem 0.7rem;
+}
+#settingsScreen input[type="text"]:focus, #settingsScreen input[type="password"]:focus { outline: none; border-color: var(--accent); }
 .vault-choice {
   border: 1px solid var(--line); border-radius: 8px; padding: 0.8rem 1rem;
   margin: 0.6rem 0; background: var(--card);
@@ -411,8 +428,8 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
         <button id="faceToggle">Cloth</button>
         <button id="themeBtn">System</button>
         <a id="waysLink" href="/integrate" title="Your LLM, WordPress, your own hosting">Ways to use it</a>
+        <button id="settingsBtn" title="Connections, your vault on edit.phext.io, and the rest of the plumbing — none of it needed to write">Settings</button>
         <button id="releaseBtn">Release</button>
-        <button id="accountBtn" style="display:none">Sign in with edit.phext.io</button>
       </div>
     </header>
     <div id="faces">
@@ -477,9 +494,44 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
       <p><button id="readAsReader" style="border:1px solid var(--accent);color:var(--accent);border-radius:6px;padding:0.45rem 1rem;font-family:var(--serif);font-size:1rem;background:var(--card)">Read it as a reader</button></p>
     </div>
 
+    <p id="releaseWpLine" class="quiet-action" style="display:none;margin-top:1.6rem"></p>
+
     <div id="restoreRow" style="display:none;margin-top:2.6rem;border-top:1px solid var(--line);padding-top:1rem">
       <span class="quiet-action">Something off? The previous version is kept.</span>
       <button class="quiet-action" id="restoreBtn" style="text-decoration:underline">Restore the previous version</button>
+    </div>
+
+  </div>
+</section>
+
+<section id="vaultScreen">
+  <div class="release-inner">
+    <p class="eyebrow" style="font-size:0.72rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--faint)">edit.phext.io</p>
+    <h1>Your vault on edit.phext.io</h1>
+    <p class="lede">Your drafts, kept in a phext that is yours — written under your own sign-in, there wherever you sign in. This browser keeps its local drafts either way; signing in is a door, never a gate. A first vault begins as a one-scroll starter file you host at edit.phext.io/submit — until it is hosted, “not hosted yet” is its designed state, not an error. (The put-away vault in the sidebar is a different, local thing.)</p>
+    <div id="vaultMain"></div>
+    <p id="vaultMsg"></p>
+    <div style="margin-top:2rem">
+      <button class="quiet-action" id="vaultBack">Back to settings</button>
+      <button class="quiet-action" id="signOutBtn" style="display:none;margin-left:1rem">Sign out</button>
+    </div>
+  </div>
+</section>
+
+<section id="settingsScreen">
+  <div class="release-inner">
+    <p class="eyebrow" style="font-size:0.72rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--faint)">Settings</p>
+    <h1>Everything else, in one place.</h1>
+    <p class="lede">Writing needs none of this. What follows is the plumbing — connections, sync, your account — kept here so the writing surface stays a writing surface. Nothing on this screen is required, and nothing here is asked of you until you come looking for it.</p>
+
+    <div class="settings-panel" id="accountPanel">
+      <h2>Your account</h2>
+      <p class="wp-note" id="accountLine"></p>
+      <div class="wp-actions">
+        <button id="accountBtn" style="display:none">Sign in with edit.phext.io</button>
+        <button class="quiet-action" id="settingsSignOut" style="display:none;text-decoration:underline">Sign out</button>
+      </div>
+      <p class="wp-note">Signing in is a door, never a gate: signed out, you can write, release, connect WordPress, sync to your own cloud, and take every output home. A first vault begins as a one-scroll starter file you host at edit.phext.io/submit; until then it is a name kept for you here, and “not hosted yet” is its designed state.</p>
     </div>
 
     <div id="wpSection">
@@ -548,20 +600,10 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
       </div>
       <p id="cloudMsg"></p>
       <ul id="cloudResults"></ul>
-    </div>
-  </div>
-</section>
 
-<section id="vaultScreen">
-  <div class="release-inner">
-    <p class="eyebrow" style="font-size:0.72rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--faint)">edit.phext.io</p>
-    <h1>Your vault on edit.phext.io</h1>
-    <p class="lede">Your drafts, kept in a phext that is yours — written under your own sign-in, there wherever you sign in. This browser keeps its local drafts either way; signing in is a door, never a gate. (The put-away vault in the sidebar is a different, local thing.)</p>
-    <div id="vaultMain"></div>
-    <p id="vaultMsg"></p>
-    <div style="margin-top:2rem">
-      <button class="quiet-action" id="vaultBack">Back to writing</button>
-      <button class="quiet-action" id="signOutBtn" style="display:none;margin-left:1rem">Sign out</button>
+
+    <div style="margin-top:2.6rem;border-top:1px solid var(--line);padding-top:1rem">
+      <button class="quiet-action" id="settingsBack" style="text-decoration:underline">Back to writing</button>
     </div>
   </div>
 </section>
@@ -1449,8 +1491,6 @@ function refreshRelease() {
   document.getElementById("restoreRow").style.display = "none";
   slugMeta = null;
   if (!slug) return;
-  loadWp();
-  loadCloud();
   if (S.keys[slug]) keyInput.value = S.keys[slug];
   fetch(`/api/bundles/${encodeURIComponent(slug)}`)
     .then(r => (r.ok ? r.json() : null))
@@ -1518,9 +1558,14 @@ releaseGo.addEventListener("click", async () => {
     document.getElementById("liveMeta").textContent =
       `Version ${data.version} · ${new Date(data.published_at * 1000).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}` +
       (data.edit_key ? " · Your edit key is saved in this browser — it is the only copy." : "");
+    const wpLine = document.getElementById("releaseWpLine");
     if (data.wordpress) {
       document.getElementById("liveMeta").textContent += ` ${wpSummary(data.wordpress)}`;
       renderWpReport(data.wordpress);
+      wpLine.style.display = "";
+      wpLine.textContent = `${wpSummary(data.wordpress)} The per-file detail lives in Settings.`;
+    } else {
+      wpLine.style.display = "none";
     }
     if (data.cloud) {
       document.getElementById("liveMeta").textContent += ` ${cloudSummary(data.cloud)}`;
@@ -1760,6 +1805,44 @@ const vaultScreen = document.getElementById("vaultScreen");
 const vaultMain = document.getElementById("vaultMain");
 const vaultMsg = document.getElementById("vaultMsg");
 
+/* ════════════════ settings: the complexity's home ════════════════
+   One screen behind one chrome button. Every panel loader is
+   called from openSettings() — account, WordPress, cloud storage
+   (#cloudSection) — and any future integration's panel is born
+   here too, never on the release screen. */
+const settingsScreen = document.getElementById("settingsScreen");
+const accountLine = document.getElementById("accountLine");
+const settingsSignOut = document.getElementById("settingsSignOut");
+
+function refreshSettingsAccount() {
+  if (!FED.enabled) {
+    accountLine.textContent = "Sign-in is not switched on at this server — and nothing needs it. Everything on this screen, and everything off it, works signed out.";
+  } else if (!FED.signedIn) {
+    accountLine.textContent = "Signed out, and fully productive: write, release, connect, sync, take the outputs home. Sign in only if you want your drafts to travel with you, in a vault on edit.phext.io.";
+  } else if (!FED.vaultName) {
+    accountLine.textContent = "Signed in. No vault yet — the button below opens yours; starting one is naming it here, then hosting its one-scroll starter file at edit.phext.io/submit.";
+  } else {
+    accountLine.textContent = `Signed in. Your vault — ${FED.vaultLabel || FED.vaultName} — is behind the button below; this browser's drafts save through to it while you work.`;
+  }
+  settingsSignOut.style.display = FED.signedIn ? "" : "none";
+}
+
+function openSettings() {
+  settingsScreen.classList.add("open");
+  refreshSettingsAccount();
+  // The WordPress panel describes a bundle by name; point it at
+  // the bundle open here when the release screen has not named one.
+  if (S.slug && !slugInput.value) slugInput.value = S.slug;
+  loadWp();
+  loadCloud();
+}
+document.getElementById("settingsBtn").addEventListener("click", openSettings);
+document.getElementById("settingsBack").addEventListener("click", () => {
+  settingsScreen.classList.remove("open");
+  editor.focus();
+});
+settingsSignOut.addEventListener("click", () => doSignOut());
+
 async function sha256Hex(text) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
@@ -1814,6 +1897,7 @@ async function refreshAccount() {
     : "Sign in with edit.phext.io";
   if (!FED.signedIn) setVaultWord("");
   else if (!FED.vaultName) setVaultWord("Signed in — no vault yet");
+  refreshSettingsAccount();
 }
 
 accountBtn.addEventListener("click", () => {
@@ -1822,17 +1906,20 @@ accountBtn.addEventListener("click", () => {
 });
 document.getElementById("vaultBack").addEventListener("click", () => {
   vaultScreen.classList.remove("open");
-  editor.focus();
+  settingsScreen.classList.add("open");
+  refreshSettingsAccount();
 });
-document.getElementById("signOutBtn").addEventListener("click", async () => {
+async function doSignOut() {
   await fetch("/auth/logout", { method: "POST" }).catch(() => {});
   FED.signedIn = false; FED.vaultName = null; FED.status = null;
   FED.conflicts = []; FED.vaultNewer = [];
   setVaultWord("");
   await refreshAccount();
   vaultScreen.classList.remove("open");
-  editor.focus();
-});
+  settingsScreen.classList.add("open");
+  refreshSettingsAccount();
+}
+document.getElementById("signOutBtn").addEventListener("click", doSignOut);
 
 async function openVaultScreen() {
   vaultScreen.classList.add("open");
@@ -1868,7 +1955,7 @@ function renderVaultMain() {
         `</span><br><button data-choose="${escapeHtml(f.name)}">Use this vault</button></div>`).join("");
       html += "<p class=\"field-label\">Or start another</p>";
     } else {
-      html += "<p class=\"lede\">No vault yet. Start one, and your drafts gain a second home — a phext on edit.phext.io, under your own name.</p>";
+      html += "<p class=\"lede\">No vault yet. Start one, and your drafts gain a second home — a phext on edit.phext.io, under your own name. It begins as a one-scroll starter file, hosted by you at edit.phext.io/submit.</p>";
     }
     html += `<input type="text" id="vaultLabelInput" placeholder="Name it — e.g. Field notes" spellcheck="false">
              <div style="margin-top:0.8rem"><button id="vaultNewBtn">Start a vault</button></div>`;
@@ -2501,13 +2588,40 @@ async function runSelfTest() {
   check("theme: the toggle stores a choice", themeOverride() === "light");
   cycleTheme(); cycleTheme();
   check("theme: the toggle cycles back to the system", themeOverride() === null);
-  // WordPress: the connection surface is on the release screen.
-  check("wordpress: the connection section is on the release screen",
+  // Complexity relocation: the writing surface carries no
+  // plumbing. Connections, sync detail, and the account live
+  // behind Settings — one click from the chrome, never on the
+  // editor's first screen, never on the release screen.
+  check("settings: one click from the editor",
+    !!document.getElementById("settingsBtn")
+    && document.getElementById("chrome").contains(document.getElementById("settingsBtn")));
+  check("settings: the first screen carries no connection form",
+    !document.getElementById("app").contains(document.getElementById("wpSection"))
+    && !document.getElementById("app").contains(document.getElementById("accountBtn")));
+  check("settings: the cloud panel lives here, not on the release screen",
+    !!document.getElementById("cloudSection")
+    && document.getElementById("settingsScreen").contains(document.getElementById("cloudSection"))
+    && !document.getElementById("releaseScreen").contains(document.getElementById("cloudSection")));
+  openSettings();
+  check("settings: opens over the editor", settingsScreen.classList.contains("open"));
+  document.getElementById("settingsBack").click();
+  check("settings: back returns to writing", !settingsScreen.classList.contains("open"));
+  // WordPress: the connection surface lives in settings now.
+  check("wordpress: the connection section is in settings, not on the release screen",
     !!document.getElementById("wpSite") && !!document.getElementById("wpUser")
-    && !!document.getElementById("wpPassword") && !!document.getElementById("wpSave"));
-  // Federation: the affordance is present, and the sync
-  // classifier agrees with the server's planning table.
-  check("fed: the sign-in affordance is in the chrome", !!document.getElementById("accountBtn"));
+    && !!document.getElementById("wpPassword") && !!document.getElementById("wpSave")
+    && document.getElementById("settingsScreen").contains(document.getElementById("wpSection"))
+    && !document.getElementById("releaseScreen").contains(document.getElementById("wpSection")));
+  check("wordpress: the release screen keeps only the quiet outcome line",
+    !!document.getElementById("releaseWpLine")
+    && document.getElementById("releaseScreen").contains(document.getElementById("releaseWpLine")));
+  // Federation: sign-in is offered in settings, never as chrome
+  // competing with Release — and the sync classifier agrees with
+  // the server's planning table.
+  check("fed: sign-in lives in settings, not the chrome",
+    !!document.getElementById("accountBtn")
+    && document.getElementById("settingsScreen").contains(document.getElementById("accountBtn"))
+    && !document.getElementById("chrome").contains(document.getElementById("accountBtn")));
   check("fed: classifier — only local moved writes",
     syncClass({ hash: "b", base_rev: 1, base_hash: "a" }, { rev: 1, sha256: "a" }) === "write");
   check("fed: classifier — only the vault moved is vault-newer",
