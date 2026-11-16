@@ -190,15 +190,25 @@ impl CloudSettings {
 
     /// The identity of the destination the sync state belongs to.
     /// Confirmations recorded against any other destination are
-    /// void: switching provider, bucket, container, or prefix
-    /// starts the new destination from unconfirmed.
+    /// void: switching provider, bucket, container, prefix,
+    /// region, or endpoint starts the new destination from
+    /// unconfirmed. (Region and endpoint belong here as much as
+    /// the bucket does: correcting a mistyped endpoint — same
+    /// bucket, same prefix — once kept the old destination's
+    /// confirmations, and the sync reported every file skipped
+    /// while uploading nothing at all.)
     pub fn destination_id(&self) -> String {
+        let endpoint = self.endpoint.as_deref().unwrap_or("default");
         match self.provider {
-            Provider::S3 => format!("s3|{}|{}", self.bucket, self.prefix),
-            Provider::Gcs => format!("gcs|{}|{}", self.bucket, self.prefix),
-            Provider::Azure => {
-                format!("azure|{}|{}|{}", self.account, self.container, self.prefix)
-            }
+            Provider::S3 => format!(
+                "s3|{}|{}|{}|{}",
+                self.bucket, self.region, self.prefix, endpoint
+            ),
+            Provider::Gcs => format!("gcs|{}|{}|{}", self.bucket, self.prefix, endpoint),
+            Provider::Azure => format!(
+                "azure|{}|{}|{}|{}",
+                self.account, self.container, self.prefix, endpoint
+            ),
         }
     }
 }
@@ -484,11 +494,25 @@ fn write_synced_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    fs::write(&tmp, bytes).map_err(|e| format!("cannot stage {}: {e}", tmp.display()))?;
-    #[cfg(unix)]
+    // The credential file is owner-only from its first byte —
+    // created with the mode, not chmodded after the fact, so no
+    // window exists where the staged secret sits at default
+    // permissions (the WordPress store's write_synced_private
+    // sets the pattern).
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+        use std::io::Write as _;
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts
+            .open(&tmp)
+            .map_err(|e| format!("cannot stage {}: {e}", tmp.display()))?;
+        f.write_all(bytes)
+            .map_err(|e| format!("cannot stage {}: {e}", tmp.display()))?;
     }
     if let Ok(f) = fs::File::open(&tmp) {
         let _ = f.sync_all();
@@ -1011,6 +1035,16 @@ fn azure_authorization(
 /// an origin only — bucket and key always ride the path
 /// (path-style addressing, the one shape that serves AWS regions,
 /// GCS, Azurite, and S3-compatible stores alike).
+///
+/// Two destination rules ride along, the WordPress adapter's
+/// discipline carried over: plain http is for a store on this
+/// machine only (a signed request must not cross the network in
+/// cleartext to anywhere else), and the link-local / cloud
+/// metadata range is refused under either scheme — no storage
+/// lives there, and it is the one address family every SSRF
+/// probe reaches for first. Private and tailnet addresses over
+/// https stay allowed: a store on the owner's own network is
+/// this feature's home turf.
 fn parse_endpoint(endpoint: &str) -> Result<(String, String), String> {
     let e = endpoint.trim().trim_end_matches('/');
     let Some((scheme, rest)) = e.split_once("://") else {
@@ -1026,7 +1060,64 @@ fn parse_endpoint(endpoint: &str) -> Result<(String, String), String> {
             "the endpoint \"{endpoint}\" should be an origin only — no path"
         ));
     }
+    if rest.contains('@') {
+        return Err(format!(
+            "the endpoint \"{endpoint}\" should not carry a user name — the access key goes in its own fields"
+        ));
+    }
+    let host = endpoint_host(rest);
+    if host.is_empty() {
+        return Err(format!("the endpoint \"{endpoint}\" has no host in it"));
+    }
+    if endpoint_is_metadata(&host) {
+        return Err(format!(
+            "the endpoint \"{endpoint}\" points at a link-local or metadata address — no storage lives there"
+        ));
+    }
+    if scheme == "http" && !endpoint_is_loopback(&host) {
+        return Err(format!(
+            "the endpoint \"{endpoint}\" is http — a signed request must not cross the network unencrypted. Use its https address, or http for a store on this machine"
+        ));
+    }
     Ok((scheme.to_string(), rest.to_string()))
+}
+
+/// The host inside an endpoint authority: brackets off an IPv6
+/// literal, a trailing numeric `:port` off everything else.
+fn endpoint_host(authority: &str) -> String {
+    if let Some(bracketed) = authority.strip_prefix('[') {
+        return bracketed
+            .split(']')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+    }
+    let host = match authority.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => authority,
+    };
+    host.to_ascii_lowercase()
+}
+
+fn endpoint_is_loopback(host: &str) -> bool {
+    host == "localhost"
+        || host.ends_with(".localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Link-local and metadata addresses: 169.254.0.0/16 (the cloud
+/// metadata service lives at its .169.254) and fe80::/10.
+fn endpoint_is_metadata(host: &str) -> bool {
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            let o = v4.octets();
+            o[0] == 169 && o[1] == 254
+        }
+        Ok(std::net::IpAddr::V6(v6)) => (v6.segments()[0] & 0xffc0) == 0xfe80,
+        Err(_) => false,
+    }
 }
 
 /// The provider's default origin (scheme, authority).
@@ -1072,9 +1163,14 @@ fn now_unix() -> u64 {
 }
 
 /// The tree's one HTTP client, with the WordPress adapter's
-/// timeouts.
+/// timeouts — and its redirect discipline: a signed request is
+/// never re-aimed by a 3xx. A store that answers with a redirect
+/// (S3's wrong-region answer is the common one) fails the file
+/// with the provider's own words in the report, endpoint hint
+/// included, instead of the signature travelling onward.
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
+        .redirects(0)
         .timeout_connect(Duration::from_secs(10))
         .timeout_read(Duration::from_secs(30))
         .timeout_write(Duration::from_secs(30))
@@ -1422,6 +1518,43 @@ mod tests {
         assert!(parse_endpoint("https://minio.local:9000").is_ok());
         assert!(parse_endpoint("https://example.com/some/path").is_err());
         assert!(parse_endpoint("example.com").is_err());
+    }
+
+    #[test]
+    fn endpoint_destination_rules() {
+        // http is the local store's door, and no one else's.
+        assert!(parse_endpoint("http://127.0.0.1:9000").is_ok());
+        assert!(parse_endpoint("http://localhost:9000").is_ok());
+        assert!(parse_endpoint("http://[::1]:9000").is_ok());
+        assert!(parse_endpoint("http://storage.example.com").is_err());
+        assert!(parse_endpoint("http://192.168.1.50:9000").is_err());
+        // The metadata / link-local range is refused under any
+        // scheme — no storage lives there.
+        assert!(parse_endpoint("https://169.254.169.254").is_err());
+        assert!(parse_endpoint("http://169.254.169.254").is_err());
+        assert!(parse_endpoint("https://[fe80::1]").is_err());
+        // A store on the owner's own network over https is the
+        // feature's home turf and stays allowed.
+        assert!(parse_endpoint("https://192.168.1.50:9000").is_ok());
+        assert!(parse_endpoint("https://100.88.154.1:9000").is_ok());
+        // Userinfo does not belong in an endpoint.
+        assert!(parse_endpoint("https://user@minio.local:9000").is_err());
+    }
+
+    #[test]
+    fn destination_identity_covers_endpoint_and_region() {
+        let a = merge_settings(None, &s3_body("endpoint=https://a.example\n")).unwrap();
+        let b = merge_settings(None, &s3_body("endpoint=https://b.example\n")).unwrap();
+        assert_ne!(a.destination_id(), b.destination_id());
+        let c = merge_settings(None, &s3_body("")).unwrap();
+        assert_ne!(a.destination_id(), c.destination_id());
+        let d = merge_settings(
+            None,
+            "provider=s3\nbucket=my-bucket\nregion=eu-west-1\naccess_key_id=AKIDEXAMPLE\nsecret_access_key=first-secret\n",
+        )
+        .unwrap();
+        assert_ne!(c.destination_id(), d.destination_id());
+        assert_eq!(a.destination_id(), a.clone().destination_id());
     }
 
     fn s3_body(extra: &str) -> String {
