@@ -52,6 +52,15 @@ folder, browsable at the sidebar's foot, restorable in one click.
 Nothing is ever destroyed, and the vault is never published or
 served — like a draft, it is private by structure.
 
+The page has a night setting. A quiet toggle in the editor's chrome
+cycles **System → Light → Dark**: your choice is stored in the
+browser and wins; with no choice stored, the OS preference
+(`prefers-color-scheme`) decides, live; with neither, light. The
+choice is one per origin — the published pages run the same
+resolution before first paint, so a reader who chose dark in the
+editor reads dark too. Dark is the same printed page at night: the
+same serif, the one indigo accent lifted, paper gone deep and warm.
+
 ## Publishing
 
 Release is one screen: the slug (set once, remembered), the full
@@ -166,7 +175,9 @@ cargo test            # unit tests + the raw-HTTP cycle tests
 scripts/e2e.sh        # the full run against the release binary:
                       # publish → byte-compare → re-publish → restore,
                       # the editor self-test in headless Chromium,
-                      # and the screenshots in docs/screenshots/
+                      # the theme legs over CDP (an emulated OS × the
+                      # stored choice, on both surfaces), and the
+                      # screenshots in docs/screenshots/
 ```
 
 ## Deploy it

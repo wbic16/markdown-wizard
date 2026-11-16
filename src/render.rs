@@ -140,10 +140,27 @@ fn strip_leading_h1(rendered: &str) -> String {
     rendered.to_string()
 }
 
+/// Theme resolution, run before first paint on every published
+/// page — the same snippet the editor carries in its head. The
+/// reader's stored choice ("mdwiz.theme", set by the editor's
+/// toggle on this origin) wins; otherwise the OS preference;
+/// otherwise light. The stylesheet below also carries a no-JS
+/// fallback keyed on the media query alone.
+pub const THEME_SNIPPET: &str = r#"(function () {
+  var t = null;
+  try { t = localStorage.getItem("mdwiz.theme"); } catch (e) {}
+  if (t !== "light" && t !== "dark") {
+    t = (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+  }
+  document.documentElement.setAttribute("data-theme", t);
+})();"#;
+
 /// The shared stylesheet: quiet, editorial, paper and ink with one
 /// deep-indigo accent. System serif for display and body, system sans
 /// for the small chrome, mono for addresses. No webfonts, no
-/// requests — the page is the whole of it.
+/// requests — the page is the whole of it. Dark is the same printed
+/// page at night: same serif, the one accent lifted, paper gone
+/// deep and warm, ink gone soft.
 pub const SITE_CSS: &str = r#"
 :root {
   --paper: #f7f6f1;
@@ -154,9 +171,37 @@ pub const SITE_CSS: &str = r#"
   --line: #dcdacd;
   --accent: #3c3f94;
   --accent-soft: #eceef7;
+  --code-bg: #22242a;
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --paper: #1a1915;
+  --card: #23221c;
+  --ink: #eae7db;
+  --soft: #b7b4a7;
+  --faint: #918e80;
+  --line: #3b3a30;
+  --accent: #969ae9;
+  --accent-soft: #262741;
+  --code-bg: #101014;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --paper: #1a1915;
+    --card: #23221c;
+    --ink: #eae7db;
+    --soft: #b7b4a7;
+    --faint: #918e80;
+    --line: #3b3a30;
+    --accent: #969ae9;
+    --accent-soft: #262741;
+    --code-bg: #101014;
+    color-scheme: dark;
+  }
 }
 * { box-sizing: border-box; }
 body {
@@ -190,7 +235,7 @@ article code {
   background: var(--accent-soft); padding: 0.1em 0.35em; border-radius: 4px;
 }
 article pre {
-  background: #22242a; color: #eef0ea; border-radius: 8px;
+  background: var(--code-bg); color: #eef0ea; border-radius: 8px;
   padding: 1rem 1.1rem; overflow-x: auto; font-size: 0.92rem; line-height: 1.5;
 }
 article pre code { background: none; padding: 0; color: inherit; }
@@ -268,6 +313,7 @@ fn shell(title: &str, body: &str) -> String {
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <title>{}</title>\n<link rel=\"icon\" href=\"/favicon.svg\">\n\
+         <script>{THEME_SNIPPET}</script>\n\
          <style>{SITE_CSS}</style>\n</head>\n<body>\n<div class=\"page\">\n{body}\n</div>\n</body>\n</html>\n",
         html_escape(title)
     )
@@ -461,6 +507,20 @@ mod tests {
         // A comment that is not a trailing hook stays visible as text.
         let html2 = render_markdown("<!-- a remark -->\n\nBody.\n");
         assert!(html2.contains("a remark"));
+    }
+
+    #[test]
+    fn published_pages_resolve_the_theme_before_paint() {
+        let page = not_found_page("x");
+        // The reader's stored choice, under the one shared key, is
+        // read by the pre-paint snippet on every published page…
+        assert!(page.contains("mdwiz.theme"));
+        assert!(page.contains("data-theme"));
+        assert!(page.contains("prefers-color-scheme: dark"));
+        // …and the stylesheet carries the dark palette plus the
+        // no-JS media-query fallback.
+        assert!(page.contains(":root[data-theme=\"dark\"]"));
+        assert!(page.contains(":root:not([data-theme])"));
     }
 
     #[test]

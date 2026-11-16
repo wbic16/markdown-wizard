@@ -124,7 +124,7 @@ if [ -x "$CHROME_BIN" ]; then
     --window-size=1600,1000 \
     --dump-dom "$BASE/?selftest=1" > "$WORK/selftest.html" 2>/dev/null
   grep -q "SELFTEST PASS" "$WORK/selftest.html" || { grep -o "FAIL [^<]*" "$WORK/selftest.html" >&2 || true; fail "editor self-test failed"; }
-  note "editor self-test passed (seed, vault, silent rename, three states, resumption, hook)"
+  note "editor self-test passed (seed, vault, silent rename, three states, resumption, hook, theme)"
 
   "$CHROME_BIN" --no-sandbox --disable-gpu --hide-scrollbars \
     --user-data-dir="$WORK/profile-first" --virtual-time-budget=8000 \
@@ -156,6 +156,17 @@ PYEOF
     --user-data-dir="$WORK/profile-release" --virtual-time-budget=8000 \
     --window-size=1200,1000 --screenshot="$SHOTS/05-release.png" "$BASE/?demo&release=garden-notes" 2>/dev/null
   note "screenshots in $SHOTS"
+
+  # ——— theme legs: an emulated OS, a stored choice, both surfaces ———
+  # The headless shell's CLI flags cannot emulate prefers-color-scheme,
+  # so these legs drive the browser over CDP (scripts/cdp.mjs).
+  if command -v node > /dev/null; then
+    node scripts/cdp.mjs "$CHROME_BIN" "$BASE" "$WORK" "$SHOTS" \
+      || fail "theme legs failed"
+    note "theme legs passed (dark/light OS × stored choice, editor + published page)"
+  else
+    note "no node on PATH — CDP theme legs skipped"
+  fi
 else
   note "no headless chrome at $CHROME_BIN — browser legs skipped"
 fi
