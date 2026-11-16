@@ -15,9 +15,11 @@ PORT="${1:-18131}"
 BASE="http://127.0.0.1:$PORT"
 WORK="$(mktemp -d)"
 
-if [ ! -x target/release/markdown-wizard ]; then
-  cargo build --release
-fi
+# Always build: the binary under test must be the one this tree
+# compiles to. Building only when missing once let a stale binary
+# answer for a fresh tree (a phantom /rss.xml 404 against the feeds
+# build). When the tree is unchanged this is a fast no-op check.
+cargo build --release
 
 ./target/release/markdown-wizard --dir "$WORK/data" --port "$PORT" --host 127.0.0.1 \
   > "$WORK/server.log" 2>&1 &

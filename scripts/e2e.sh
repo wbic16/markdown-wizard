@@ -6,7 +6,7 @@
 #
 # Usage: scripts/e2e.sh [port]
 # Expects the release binary at target/release/markdown-wizard
-# (builds it if missing) and a Chromium headless shell for the
+# (builds it first, always) and a Chromium headless shell for the
 # browser legs (CHROME_BIN overrides the path).
 set -euo pipefail
 
@@ -18,9 +18,11 @@ SHOTS="${SHOTS_DIR:-$WORK/shots}"
 mkdir -p "$SHOTS"
 CHROME_BIN="${CHROME_BIN:-$HOME/.cache/ms-playwright/chromium_headless_shell-1255/chrome-headless-shell-linux64/chrome-headless-shell}"
 
-if [ ! -x target/release/markdown-wizard ]; then
-  cargo build --release
-fi
+# Always build: the binary under test must be the one this tree
+# compiles to. Building only when missing once let a stale binary
+# answer for a fresh tree (a phantom /rss.xml 404 against the feeds
+# build). When the tree is unchanged this is a fast no-op check.
+cargo build --release
 
 ./target/release/markdown-wizard --dir "$WORK/data" --port "$PORT" --host 127.0.0.1 \
   > "$WORK/server.log" 2>&1 &
