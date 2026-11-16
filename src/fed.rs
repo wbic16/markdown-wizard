@@ -319,18 +319,16 @@ impl Fed {
 
     /// Persist the state file: stage, sync, rename, 0600 — it
     /// holds live bearer tokens, so it is written like a secret
-    /// and never world-readable.
+    /// and never world-readable. The staged file is created with
+    /// its mode, not chmodded after the fact, so the tokens never
+    /// sit at default permissions, even briefly (the WordPress
+    /// store's write_synced_private sets the pattern).
     fn persist(&self, state: &FedState) {
         let Ok(text) = serde_json::to_string(state) else {
             return;
         };
         let tmp = self.state_path.with_extension("json.tmp");
-        if crate::store::write_synced(&tmp, text.as_bytes()).is_ok() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-            }
+        if write_private_synced(&tmp, text.as_bytes()).is_ok() {
             let _ = std::fs::rename(&tmp, &self.state_path);
         }
     }
@@ -350,9 +348,39 @@ impl Fed {
 
     fn session(&self, headers: &Map<String, String>) -> Option<(String, Session)> {
         let sid = self.session_id(headers)?;
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        // A session lives SESSION_MAX_AGE from its creation — the
+        // same age the cookie carries. The stored record enforces
+        // it too: a session id copied out of the browser must not
+        // outlive the cookie that was meant to bound it, riding
+        // refresh rotations forever.
+        let expired = state
+            .sessions
+            .get(&sid)
+            .is_some_and(|s| now_unix().saturating_sub(s.created_at) > SESSION_MAX_AGE as u64);
+        if expired {
+            state.sessions.remove(&sid);
+            self.persist(&state);
+            return None;
+        }
         state.sessions.get(&sid).cloned().map(|s| (sid, s))
     }
+}
+
+/// Write bytes to a fresh file with owner-only permissions from
+/// creation, synced before close — the credential-file shape.
+fn write_private_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path)?;
+    f.write_all(bytes)?;
+    f.sync_all()
 }
 
 // ── provider calls ───────────────────────────────────────────────
@@ -1366,7 +1394,17 @@ impl Fed {
         let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
         let params = parse_pairs(query);
         if let Some(error) = params.get("error") {
-            if error == "invalid_client" {
+            // An error answer clears the cached registration only
+            // when it belongs to a flow this server actually
+            // started (its state nonce is pending, and is consumed
+            // here): the callback is an unauthenticated address,
+            // and a bare ?error=invalid_client from anywhere must
+            // not be able to wipe the client registration.
+            let flow_is_ours = params
+                .get("state")
+                .map(|s| self.pending.lock().unwrap().remove(s).is_some())
+                .unwrap_or(false);
+            if error == "invalid_client" && flow_is_ours {
                 self.clear_registration();
             }
             let desc = params
@@ -2374,6 +2412,48 @@ mod tests {
         assert_ne!(bundle_manifest_coord(1), VAULT_MANIFEST_COORD);
         assert_eq!(file_coord(3, 7), "2.1.3/1.1.7/1.1.1");
         assert_eq!(VAULT_MANIFEST_COORD, "1.1.1/1.1.1/1.1.1");
+    }
+
+    #[test]
+    fn sessions_expire_at_the_cookie_age() {
+        let dir = tempfile::tempdir().unwrap();
+        let fed = Fed::open(
+            dir.path(),
+            FedConfig {
+                enabled: true,
+                issuer: "https://issuer.example".to_string(),
+            },
+        )
+        .unwrap();
+        let mut headers = Map::new();
+        headers.insert(
+            "cookie".to_string(),
+            format!("{SESSION_COOKIE}=abc123"),
+        );
+        let session_at = |created_at: u64| Session {
+            access_token: "a".to_string(),
+            refresh_token: "r".to_string(),
+            expires_at: now_unix() + 3600,
+            vault_name: None,
+            vault_label: None,
+            created_at,
+        };
+        // Born in the distant past: the record must not answer,
+        // however fresh its access token looks — the cookie's
+        // Max-Age is the session's age, enforced server-side too.
+        fed.state
+            .lock()
+            .unwrap()
+            .sessions
+            .insert("abc123".to_string(), session_at(1));
+        assert!(fed.session(&headers).is_none());
+        // Born now: answers.
+        fed.state
+            .lock()
+            .unwrap()
+            .sessions
+            .insert("abc123".to_string(), session_at(now_unix()));
+        assert!(fed.session(&headers).is_some());
     }
 
     #[test]

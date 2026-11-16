@@ -702,6 +702,26 @@ mod tests {
     }
 
     #[test]
+    fn control_characters_cannot_break_the_feed() {
+        // A markdown source carrying XML-1.0-illegal control
+        // characters (a stray bell, a vertical tab — copy-paste
+        // accidents) must not make the feed unparseable: they are
+        // replaced at the escape, and everything else — the ]]>,
+        // the bare &, the markup — round-trips escaped.
+        let b = bundle(
+            "notes",
+            &[("index.md", "# Home\n\nBell \u{7} and vtab \u{b}, a ]]> and a bare & here.\n")],
+            &[("index.md", 100)],
+        );
+        let feed = feed_xml_with_hub(&b, "https://md.phext.io", None);
+        assert!(!feed.contains('\u{7}'), "{feed}");
+        assert!(!feed.contains('\u{b}'), "{feed}");
+        assert!(feed.contains('\u{FFFD}'), "{feed}");
+        assert!(feed.contains("]]&gt;"), "{feed}");
+        assert!(feed.contains("bare &amp; here"), "{feed}");
+    }
+
+    #[test]
     fn absolutize_resolves_like_a_browser() {
         let page = "https://md.phext.io/b/notes/essays/one";
         assert_eq!(

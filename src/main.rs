@@ -183,6 +183,43 @@ fn public_base(headers: &HashMap<String, String>) -> String {
     format!("{scheme}://{host}")
 }
 
+/// The origin the OAuth flow may name as its redirect base. A
+/// feed link built from a request's Host is ordinary virtual-host
+/// behavior; a redirect URI is a credential's destination — it is
+/// registered with the provider and the provider sends
+/// authorization codes to it — so it is never built from an
+/// arbitrary Host header. A forged Host on /auth/login would
+/// otherwise register the attacker's host as this client's
+/// redirect URI (proven in the QA loop, pass 2). The base is: the
+/// operator's `MDWIZ_PUBLIC_BASE` when set; else the request's own
+/// origin when its host is loopback (local development and the
+/// federation test stub live there); else the canonical
+/// deployment, https://md.phext.io.
+fn fed_base(headers: &HashMap<String, String>) -> String {
+    let configured = std::env::var("MDWIZ_PUBLIC_BASE")
+        .ok()
+        .map(|v| v.trim().trim_end_matches('/').to_string())
+        .filter(|v| !v.is_empty());
+    fed_base_from(headers, configured)
+}
+
+fn fed_base_from(headers: &HashMap<String, String>, configured: Option<String>) -> String {
+    if let Some(base) = configured {
+        return base;
+    }
+    let host = headers.get("host").cloned().unwrap_or_default();
+    let host_name = host
+        .trim_start_matches('[')
+        .split([':', ']'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if host_name == "localhost" || host_name == "127.0.0.1" || host_name == "::1" {
+        return public_base(headers);
+    }
+    "https://md.phext.io".to_string()
+}
+
 fn handle(
     stream: &mut TcpStream,
     store: &Arc<Store>,
@@ -274,7 +311,7 @@ fn handle(
         }
         // Federation via edit.phext.io (see fed.rs): the browser
         // flow, the session's own endpoints, and the vault sync.
-        ("GET", "/auth/login") => fed.handle_login(stream, &headers, &public_base(&headers)),
+        ("GET", "/auth/login") => fed.handle_login(stream, &headers, &fed_base(&headers)),
         ("GET", "/auth/callback") => fed.handle_callback(stream, &headers, &target),
         ("POST", "/auth/logout") => fed.handle_logout(stream, &headers),
         ("GET" | "HEAD", "/api/me") => fed.handle_me(stream, &headers, head_only),
@@ -989,5 +1026,54 @@ fn content_type_for(path: &str) -> &'static str {
         "application/pdf"
     } else {
         "application/octet-stream"
+    }
+}
+
+#[cfg(test)]
+mod fed_base_tests {
+    use super::*;
+
+    fn headers(host: &str) -> HashMap<String, String> {
+        let mut h = HashMap::new();
+        h.insert("host".to_string(), host.to_string());
+        h
+    }
+
+    #[test]
+    fn a_forged_host_never_becomes_the_redirect_base() {
+        // The QA loop's pass-2 proof: Host: evil.example once
+        // registered evil.example as the OAuth redirect URI.
+        assert_eq!(
+            fed_base_from(&headers("evil.example"), None),
+            "https://md.phext.io"
+        );
+        assert_eq!(
+            fed_base_from(&headers("md.phext.io"), None),
+            "https://md.phext.io"
+        );
+    }
+
+    #[test]
+    fn loopback_hosts_keep_their_own_origin() {
+        // Local development and the federation stub live here.
+        assert_eq!(
+            fed_base_from(&headers("127.0.0.1:8090"), None),
+            "http://127.0.0.1:8090"
+        );
+        assert_eq!(
+            fed_base_from(&headers("localhost:8090"), None),
+            "http://localhost:8090"
+        );
+    }
+
+    #[test]
+    fn an_operator_base_wins_over_everything() {
+        assert_eq!(
+            fed_base_from(
+                &headers("evil.example"),
+                Some("https://staging.example".to_string())
+            ),
+            "https://staging.example"
+        );
     }
 }

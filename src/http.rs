@@ -340,7 +340,13 @@ pub fn html_escape(s: &str) -> String {
 }
 
 /// XML-escape text for the RSS feed (same five characters as HTML,
-/// without the apostrophe form XML parsers also accept).
+/// without the apostrophe form XML parsers also accept). Control
+/// characters XML 1.0 forbids outright — everything below U+0020
+/// except tab, line feed, and carriage return — are replaced with
+/// U+FFFD: left raw, a single one (a stray bell or vertical tab in
+/// a markdown source, say) makes the whole feed not well-formed,
+/// and every subscriber's parser refuses it — the same silent
+/// death as one unescaped `&`, by another character.
 pub fn xml_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
@@ -350,6 +356,9 @@ pub fn xml_escape(s: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
+            c if (c as u32) < 0x20 && !matches!(c, '\t' | '\n' | '\r') => {
+                out.push('\u{FFFD}')
+            }
             c => out.push(c),
         }
     }
