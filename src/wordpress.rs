@@ -411,16 +411,30 @@ pub fn clean_site_url(raw: &str) -> Result<String, String> {
         }
     };
     let authority = rest.split('/').next().unwrap_or("");
-    let host = authority
-        .rsplit('@')
-        .next()
-        .unwrap_or("")
-        .split(':')
-        .next()
-        .unwrap_or("")
-        .trim_matches(|c| c == '[' || c == ']');
+    if authority.contains('@') {
+        return Err(
+            "the site address should not carry a user name — the WordPress user and application password go in their own fields below"
+                .to_string(),
+        );
+    }
+    // Host and port: an IPv6 literal wears brackets; anything else
+    // splits at its last colon when what follows is a port number.
+    let host: &str = if let Some(bracketed) = authority.strip_prefix('[') {
+        match bracketed.split_once(']') {
+            Some((h, _)) => h,
+            None => return Err("the site address has a malformed IPv6 host".to_string()),
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => h,
+            _ => authority,
+        }
+    };
     if host.is_empty() {
         return Err("the site address has no host in it".to_string());
+    }
+    if host.contains(':') && !authority.starts_with('[') {
+        return Err("the site address does not parse — check it for typos".to_string());
     }
     if is_wordpress_com_host(host) {
         return Err(
@@ -428,11 +442,49 @@ pub fn clean_site_url(raw: &str) -> Result<String, String> {
                 .to_string(),
         );
     }
-    let local = {
-        let h = host.to_ascii_lowercase();
-        h == "localhost" || h == "127.0.0.1" || h == "::1"
+    // Where does this address point? The sync POSTs the bundle's
+    // application password to it, so an address aimed inside a
+    // network — a cloud metadata service, a tailnet peer, a LAN
+    // host — is refused at the door rather than discovered at
+    // publish time. A name that merely resolves inward is not
+    // caught here (that takes a resolving check at connect time);
+    // literal addresses, the aimable kind, are.
+    let ip = host.parse::<std::net::IpAddr>().ok();
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host.to_ascii_lowercase().ends_with(".localhost")
+        || ip.is_some_and(|ip| ip.is_loopback());
+    let internal = match ip {
+        Some(std::net::IpAddr::V4(v4)) => {
+            let o = v4.octets();
+            v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || o[0] == 0
+                || (o[0] == 100 && (64..128).contains(&o[1])) // shared/CGNAT space
+        }
+        Some(std::net::IpAddr::V6(v6)) => {
+            let seg = v6.segments();
+            v6.is_unspecified()
+                || v6.is_multicast()
+                || (seg[0] & 0xfe00) == 0xfc00 // unique local fc00::/7
+                || (seg[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+        }
+        None => false,
     };
-    if scheme == "http" && !local {
+    if internal && !loopback {
+        return Err(
+            "that address points inside a private network — this connection is for a WordPress site on the public internet (or one on this machine, over http)"
+                .to_string(),
+        );
+    }
+    if scheme == "https" && loopback {
+        return Err(
+            "a site on this machine connects over http — https is for the public internet"
+                .to_string(),
+        );
+    }
+    if scheme == "http" && !loopback {
         return Err(
             "that address is http, not https — an application password must not cross the network unencrypted. Use the site's https address"
                 .to_string(),
@@ -623,6 +675,12 @@ fn wp_error(code: u16, body: &str) -> String {
 
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
+        // Never follow a redirect: the request carries the site's
+        // application password, and a redirect is the connected
+        // site (or anything that can answer for it) choosing a
+        // second destination for that request. A 3xx is reported
+        // like any other answer and the sync plainly fails.
+        .redirects(0)
         .timeout_connect(Duration::from_secs(10))
         .timeout_read(Duration::from_secs(30))
         .timeout_write(Duration::from_secs(30))
@@ -899,6 +957,28 @@ mod tests {
         assert!(clean_site_url("example.com").is_err());
         assert!(clean_site_url("https://").is_err());
         assert!(clean_site_url("ftp://example.com").is_err());
+        // Aimed inside a network: refused whatever the scheme —
+        // the sync would POST the application password there.
+        for aimed in [
+            "https://169.254.169.254", // cloud metadata
+            "https://100.88.154.1",    // tailnet / CGNAT space
+            "https://192.168.1.99",
+            "https://10.1.2.3",
+            "https://172.16.0.5",
+            "https://[fd00::1]",
+            "https://[fe80::1]",
+        ] {
+            assert!(clean_site_url(aimed).is_err(), "{aimed} was accepted");
+        }
+        // This machine stays reachable over http, IPv6 included;
+        // https to it is refused (no local site answers https with
+        // a publicly trusted certificate anyway).
+        assert!(clean_site_url("http://[::1]:8080").is_ok());
+        assert!(clean_site_url("https://127.0.0.1").is_err());
+        // A public IPv6 literal parses and is accepted.
+        assert!(clean_site_url("https://[2606:4700:4700::1111]").is_ok());
+        // Userinfo does not belong in the address.
+        assert!(clean_site_url("https://user@example.com").is_err());
     }
 
     #[test]

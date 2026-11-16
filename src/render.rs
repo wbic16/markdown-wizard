@@ -79,13 +79,33 @@ pub fn render_markdown(md: &str) -> String {
             title,
             id,
         }) => {
-            let rewritten = rewrite_internal_link(&dest_url);
-            let dest_url = if rewritten == dest_url.as_ref() {
+            let dest = safe_dest(&rewrite_internal_link(&dest_url), false);
+            let dest_url = if dest == dest_url.as_ref() {
                 dest_url
             } else {
-                CowStr::Boxed(rewritten.into_boxed_str())
+                CowStr::Boxed(dest.into_boxed_str())
             };
             Event::Start(Tag::Link {
+                link_type,
+                dest_url,
+                title,
+                id,
+            })
+        }
+        // Image sources get the same scheme rule as links.
+        Event::Start(Tag::Image {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => {
+            let dest = safe_dest(&dest_url, true);
+            let dest_url = if dest == dest_url.as_ref() {
+                dest_url
+            } else {
+                CowStr::Boxed(dest.into_boxed_str())
+            };
+            Event::Start(Tag::Image {
                 link_type,
                 dest_url,
                 title,
@@ -117,6 +137,38 @@ fn rewrite_internal_link(dest: &str) -> String {
         },
         None => dest.to_string(),
     }
+}
+
+/// A link or image destination a reader's browser may be sent
+/// to. A destination carrying a scheme other than http, https,
+/// mailto, or tel — `javascript:`, `data:text/html`, `file:`, and
+/// their kin — is neutralized: a bundle is public writing, and it
+/// must not hand a reader's browser an executable address.
+/// Relative paths, fragments, and protocol-relative addresses
+/// carry no scheme and pass through untouched.
+fn safe_dest(dest: &str, image: bool) -> String {
+    if let Some(colon) = dest.find(':') {
+        let scheme = &dest[..colon];
+        let is_scheme = !scheme.is_empty()
+            && scheme
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+        if is_scheme {
+            let lower = scheme.to_ascii_lowercase();
+            if !matches!(lower.as_str(), "http" | "https" | "mailto" | "tel") {
+                return if image {
+                    String::new()
+                } else {
+                    "#".to_string()
+                };
+            }
+        }
+    }
+    dest.to_string()
 }
 
 /// The first `# heading` of a markdown text, for page titles.
@@ -638,6 +690,24 @@ mod tests {
         assert!(html.contains("<h1>Hi</h1>"));
         assert!(html.contains("<em>text</em>"));
         assert!(html.contains("<strong>more</strong>"));
+    }
+
+    #[test]
+    fn dangerous_schemes_do_not_reach_the_reader() {
+        let html = render_markdown(
+            "[click](javascript:alert(1)) [mail](mailto:a@b.test) [call](tel:+15551234567) \
+             [web](https://x.test/) [rel](docs/page.md) [frag](#sec)\n\n\
+             ![pic](data:text/html;base64,PHNjcmlwdD4=) ![ok](assets/pic.png)\n",
+        );
+        assert!(!html.contains("javascript:"), "{html}");
+        assert!(!html.contains("data:text/html"), "{html}");
+        assert!(html.contains("href=\"#\""), "{html}");
+        assert!(html.contains("href=\"mailto:a@b.test\""), "{html}");
+        assert!(html.contains("href=\"tel:+15551234567\""), "{html}");
+        assert!(html.contains("href=\"https://x.test/\""), "{html}");
+        assert!(html.contains("href=\"docs/page\""), "{html}");
+        assert!(html.contains("href=\"#sec\""), "{html}");
+        assert!(html.contains("src=\"assets/pic.png\""), "{html}");
     }
 
     #[test]

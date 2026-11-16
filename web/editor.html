@@ -1601,7 +1601,11 @@ function renderWpReport(report) {
     o.className = "wp-out" + (r.outcome === "failed" ? " failed" : "");
     o.textContent = r.outcome === "failed" ? `failed — ${r.error || ""}` : r.outcome;
     li.append(p, o);
-    if (r.link) {
+    // The permalink comes from the connected WordPress site; only
+    // a web address may become a link here — anything else the
+    // site (or whatever answers for it) returns is shown as no
+    // link at all, never as a clickable javascript: address.
+    if (r.link && /^https?:\/\//i.test(r.link)) {
       const a = document.createElement("a");
       a.href = r.link;
       a.target = "_blank";
@@ -2388,6 +2392,15 @@ async function runSelfTest() {
   check("vault: excluded from publish", !publishableFiles().some(([p]) => p.startsWith("vault/")));
   restoreFromVault("vault/draft.md");
   check("vault: restored", S.files.has("draft.md") && !S.files.has("vault/draft.md"));
+  // WordPress report links: only a web address becomes a link.
+  renderWpReport({ results: [
+    { path: "a.md", outcome: "created", link: "javascript:alert(1)" },
+    { path: "b.md", outcome: "created", link: "https://example.com/b" },
+  ], dropped: [] });
+  const wpAnchors = wpResults.querySelectorAll("a");
+  check("wp report: a javascript: permalink is not a link",
+    wpAnchors.length === 1 && wpAnchors[0].href === "https://example.com/b");
+  wpResults.innerHTML = "";
   // Silent rename from the first line
   S.files.set("note.md", { kind: "text", text: "# Field Notes\n\nbody\n" });
   S.current = "note.md";

@@ -142,9 +142,24 @@ fn if_none_match(headers: &HashMap<String, String>, tag: &str) -> bool {
 pub fn parse_request(
     reader: &mut BufReader<TcpStream>,
 ) -> Option<(String, String, HashMap<String, String>)> {
+    // The head — request line plus headers — is capped: a client
+    // may not grow it without bound, by endless header lines or by
+    // one endless line. The head is read through a take() of the
+    // buffered reader, so the cap binds memory as well as count;
+    // bytes the buffer already pulled for the body stay in the
+    // buffer for read_body. Past the cap the connection is dropped
+    // without an answer. (Production also sits behind nginx, which
+    // caps heads itself; the binary keeps its own bound regardless.)
+    const MAX_HEAD_BYTES: u64 = 64 * 1024;
+    let mut head = reader.take(MAX_HEAD_BYTES);
+    let mut total = 0usize;
     let mut request_line = String::new();
-    if reader.read_line(&mut request_line).ok()? == 0 {
+    if head.read_line(&mut request_line).ok()? == 0 {
         return None;
+    }
+    total += request_line.len();
+    if !request_line.ends_with('\n') {
+        return None; // the cap, or a peer that never finished the line
     }
     let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
     if parts.len() < 2 {
@@ -153,18 +168,27 @@ pub fn parse_request(
     let method = parts[0].to_string();
     let path = parts[1].to_string();
     let mut headers = HashMap::new();
+    let mut terminated = false;
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line).ok()? == 0 {
+        if head.read_line(&mut line).ok()? == 0 {
             break;
+        }
+        total += line.len();
+        if !line.ends_with('\n') {
+            return None; // the cap cut a header line in two
         }
         let line = line.trim().to_string();
         if line.is_empty() {
+            terminated = true;
             break;
         }
         if let Some((k, v)) = line.split_once(':') {
             headers.insert(k.trim().to_lowercase(), v.trim().to_string());
         }
+    }
+    if !terminated && total as u64 >= MAX_HEAD_BYTES {
+        return None; // the cap, spent exactly at a line boundary
     }
     Some((method, path, headers))
 }
