@@ -1,0 +1,16 @@
+[Unit]
+Description=markdown-wizard — md.phext.io, a zip of markdown is the document
+After=network.target
+
+[Service]
+Type=simple
+User=wbic16
+WorkingDirectory=/source/markdown-wizard
+ExecStart=/source/markdown-wizard/target/release/markdown-wizard --dir /source/markdown-wizard-data --port 8090 --host 127.0.0.1
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

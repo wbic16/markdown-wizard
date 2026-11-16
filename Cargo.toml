@@ -1,0 +1,31 @@
+[package]
+name = "markdown-wizard"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Will Bickford <wbic16@gmail.com>"]
+description = "md.phext.io — a first-principles markdown editor whose document is a zip of .md files: edit locally, publish the bundle atomically, every file at its own stable .md URL"
+repository = "https://github.com/wbic16/markdown-wizard"
+keywords = ["markdown", "editor", "zip", "publishing", "phext"]
+categories = ["text-editors", "web-programming"]
+
+[dependencies]
+# Zip reading for bundle validation/extraction (deflate only — the lean
+# feature set; bundles the editor writes are stored, bundles it reads may
+# be deflated).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# One markdown renderer, used for the editor preview and the published
+# reading view alike, so the two can never diverge.
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+# Edit-key hashing and strong ETags (the phext-edit response pattern).
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "markdown-wizard"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3

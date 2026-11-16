@@ -1,0 +1,1290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>md.phext.io — a zip of markdown is the document</title>
+<link rel="icon" href="/favicon.svg">
+<style>
+:root {
+  --paper: #f7f6f1;
+  --card: #fffefb;
+  --ink: #20211c;
+  --soft: #565a52;
+  --faint: #8b8f85;
+  --line: #dcdacd;
+  --accent: #3c3f94;
+  --accent-soft: #eceef7;
+  --tint: rgba(60, 63, 148, 0.05);
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font-family: var(--sans); font-size: 15px; line-height: 1.5;
+  overflow: hidden;
+}
+button {
+  font: inherit; color: var(--soft); background: none; border: none;
+  cursor: pointer; padding: 0.15rem 0.3rem; border-radius: 4px;
+}
+button:hover { color: var(--accent); }
+#app { display: flex; height: 100vh; }
+
+/* ————— sidebar: the pattern card ————— */
+#sidebar {
+  width: 19.5rem; flex: 0 0 19.5rem; display: flex; flex-direction: column;
+  border-right: 1px solid var(--line); background: var(--paper);
+  transition: opacity 0.35s ease;
+}
+.brand {
+  font-family: var(--serif); font-size: 1.25rem; padding: 1.1rem 1.2rem 0.2rem;
+}
+.brand .sub {
+  display: block; font-family: var(--sans); font-size: 0.74rem;
+  color: var(--faint); letter-spacing: 0.04em; margin-top: 0.15rem;
+}
+#treeWrap { flex: 1; overflow-y: auto; padding: 0.6rem 0 0.4rem; }
+.entry { padding: 0.42rem 1.2rem 0.42rem 1.2rem; cursor: pointer; }
+.entry:hover { background: var(--accent-soft); }
+.entry.on { background: var(--accent-soft); }
+.entry .inc {
+  font-family: var(--serif); font-style: italic; font-size: 1.0rem;
+  line-height: 1.3; display: block;
+}
+.entry .pth {
+  font-family: var(--mono); font-size: 0.72rem; color: var(--faint);
+  display: block; margin-top: 0.1rem; word-break: break-all;
+}
+.entry .wc {
+  float: right; font-size: 0.74rem; color: var(--faint); margin-top: 0.2rem;
+}
+.entry.depth1 { padding-left: 2.1rem; }
+.entry.depth2 { padding-left: 3.0rem; }
+.pinned { border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); margin: 0.4rem 0; }
+.era-name {
+  font-family: var(--serif); font-style: italic; color: var(--soft);
+  padding: 0.7rem 1.2rem 0.1rem; font-size: 0.95rem;
+}
+#eraNudge {
+  display: none; margin: 0.6rem 1.2rem; padding: 0.6rem 0;
+  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  font-family: var(--serif); font-style: italic; color: var(--soft); font-size: 0.92rem;
+}
+#eraNudge button { font-style: normal; }
+#eraNudge input {
+  font-family: var(--mono); font-size: 0.85rem; width: 9rem;
+  border: 1px solid var(--line); border-radius: 4px; padding: 0.15rem 0.35rem;
+  background: var(--card); color: var(--ink);
+}
+#vaultBox { border-top: 1px solid var(--line); padding: 0.5rem 1.2rem; }
+#vaultBox .vhead {
+  font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--faint); cursor: pointer; user-select: none;
+}
+#vaultList { display: none; margin-top: 0.4rem; }
+#vaultList .ventry { padding: 0.3rem 0; border-bottom: 1px solid var(--line); }
+#vaultList .ventry .inc { font-family: var(--serif); font-style: italic; font-size: 0.92rem; display: block; }
+#vaultList .ventry .meta { font-size: 0.74rem; color: var(--faint); }
+#vaultList .ventry button { font-size: 0.78rem; }
+.side-actions {
+  display: flex; gap: 0.4rem; flex-wrap: wrap;
+  padding: 0.7rem 1.2rem 0.2rem; border-top: 1px solid var(--line);
+}
+.side-actions button { border: 1px solid var(--line); border-radius: 6px; padding: 0.3rem 0.6rem; background: var(--card); }
+.side-actions button:hover { border-color: var(--accent); color: var(--accent); }
+.side-foot {
+  padding: 0.6rem 1.2rem 1rem; color: var(--faint); font-size: 0.78rem; line-height: 1.55;
+}
+.side-foot a { color: var(--soft); }
+.side-foot .keys { display: block; margin-bottom: 0.5rem; }
+
+/* ————— main column ————— */
+#main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#chrome {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+  padding: 0.7rem 1.4rem; border-bottom: 1px solid var(--line);
+  transition: opacity 0.35s ease;
+}
+#pathInput {
+  font-family: var(--mono); font-size: 0.85rem; color: var(--ink);
+  border: none; background: none; border-bottom: 1px solid transparent;
+  padding: 0.1rem 0.2rem; min-width: 10rem;
+}
+#pathInput:focus { outline: none; border-bottom-color: var(--accent); }
+#pubAddr { font-family: var(--mono); font-size: 0.74rem; color: var(--faint); margin-left: 0.7rem; }
+#pubAddr a { color: var(--faint); }
+.chrome-right { display: flex; align-items: baseline; gap: 1rem; white-space: nowrap; }
+#stateWord { font-family: var(--serif); font-style: italic; color: var(--soft); font-size: 0.92rem; }
+#savedWord { color: var(--faint); font-size: 0.8rem; opacity: 0; transition: opacity 0.8s ease; }
+#savedWord.show { opacity: 1; transition: opacity 0.15s ease; }
+#releaseBtn {
+  color: var(--accent); border: 1px solid var(--accent); border-radius: 6px;
+  padding: 0.35rem 0.9rem; background: var(--card); font-family: var(--serif); font-size: 1rem;
+}
+#releaseBtn:hover { background: var(--accent); color: #fff; }
+#faces { flex: 1; display: flex; min-height: 0; }
+.face { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.face + .face { border-left: 1px solid var(--line); }
+.face-name {
+  font-size: 0.7rem; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--faint); padding: 0.55rem 1.4rem 0.3rem;
+}
+#editor {
+  flex: 1; border: none; resize: none; background: var(--paper);
+  font-family: var(--serif); font-size: 1.125rem; line-height: 1.62;
+  color: var(--ink); padding: 0.4rem 1.4rem 2rem;
+  max-width: 64ch; width: 100%; margin: 0 auto;
+}
+#editor:focus { outline: none; }
+#cloth {
+  flex: 1; overflow-y: auto; padding: 0.4rem 1.4rem 2rem;
+  font-family: var(--serif); font-size: 1.125rem; line-height: 1.7;
+  max-width: 64ch; width: 100%; margin: 0 auto;
+}
+#cloth .blk { border-radius: 4px; padding: 0 0.4rem; margin: 0 -0.4rem; }
+#cloth .blk.hl { background: var(--tint); }
+#cloth h1, #cloth h2, #cloth h3 { line-height: 1.25; }
+#cloth a { color: var(--accent); }
+#cloth code { font-family: var(--mono); font-size: 0.84em; background: var(--accent-soft); padding: 0.1em 0.35em; border-radius: 4px; }
+#cloth pre { background: #22242a; color: #eef0ea; border-radius: 8px; padding: 1rem 1.1rem; overflow-x: auto; font-size: 0.9rem; line-height: 1.5; }
+#cloth pre code { background: none; padding: 0; color: inherit; }
+#cloth blockquote { margin: 1em 0; padding: 0.2em 1em; border-left: 3px solid var(--accent); color: var(--soft); }
+#cloth table { border-collapse: collapse; }
+#cloth th, #cloth td { border: 1px solid var(--line); padding: 0.35em 0.7em; }
+#cloth img { max-width: 100%; }
+#statusbar {
+  display: flex; justify-content: space-between; gap: 1rem; align-items: baseline;
+  padding: 0.5rem 1.4rem; border-top: 1px solid var(--line);
+  color: var(--faint); font-size: 0.82rem; transition: opacity 0.35s ease;
+}
+#countWord { font-family: var(--serif); font-style: italic; }
+.structures button { text-decoration: underline; text-underline-offset: 3px; }
+
+/* focus mode */
+body.focused #sidebar, body.focused #chrome, body.focused #statusbar { opacity: 0.2; }
+body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #statusbar { opacity: 1; }
+
+/* face toggle (narrow screens) */
+#faceToggle { display: none; }
+@media (max-width: 900px) {
+  #sidebar { display: none; }
+  .face.clothFace { display: none; }
+  body.show-cloth .face.clothFace { display: flex; }
+  body.show-cloth .face.patternFace { display: none; }
+  #faceToggle { display: inline; }
+}
+
+/* ————— jump overlay (Cmd/Ctrl-K) ————— */
+#jumpWrap {
+  display: none; position: fixed; inset: 0; background: rgba(32, 33, 28, 0.25);
+  z-index: 40; align-items: flex-start; justify-content: center; padding-top: 12vh;
+}
+#jumpWrap.open { display: flex; }
+#jumpCard {
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  width: min(34rem, 92vw); padding: 1rem 1.2rem; box-shadow: 0 18px 50px rgba(32,33,28,0.25);
+}
+#jumpInput {
+  width: 100%; font-family: var(--serif); font-size: 1.2rem; border: none;
+  border-bottom: 1px solid var(--line); padding: 0.3rem 0.1rem; background: none; color: var(--ink);
+}
+#jumpInput:focus { outline: none; border-bottom-color: var(--accent); }
+#jumpList { margin-top: 0.6rem; max-height: 40vh; overflow-y: auto; }
+#jumpList .jentry { padding: 0.4rem 0.3rem; cursor: pointer; border-radius: 4px; }
+#jumpList .jentry.sel { background: var(--accent-soft); }
+#jumpList .jentry .inc { font-family: var(--serif); font-style: italic; display: block; }
+#jumpList .jentry .pth { font-family: var(--mono); font-size: 0.72rem; color: var(--faint); }
+
+/* ————— release screen ————— */
+#releaseScreen {
+  display: none; position: fixed; inset: 0; background: var(--paper); z-index: 30;
+  overflow-y: auto;
+}
+#releaseScreen.open { display: block; }
+.release-inner { max-width: 40rem; margin: 0 auto; padding: 4rem 1.25rem; }
+.release-inner h1 {
+  font-family: var(--serif); font-weight: 600; font-size: 2.2rem; margin: 0 0 0.4rem;
+}
+.release-inner .lede { color: var(--soft); font-family: var(--serif); font-size: 1.08rem; }
+.big-url {
+  font-family: var(--mono); font-size: 1.25rem; color: var(--accent);
+  border-bottom: 1px solid var(--ink); padding: 0.8rem 0; margin: 1.6rem 0 0.4rem;
+  word-break: break-all;
+}
+.field-label { font-size: 0.74rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); margin: 1.6rem 0 0.3rem; }
+.release-inner input[type="text"] {
+  width: 100%; font-family: var(--mono); font-size: 1.05rem; color: var(--ink);
+  background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 0.55rem 0.7rem;
+}
+.release-inner input[type="text"]:focus { outline: none; border-color: var(--accent); }
+#releaseGo {
+  margin-top: 2.2rem; background: var(--accent); color: #fff; border: 1px solid var(--accent);
+  font-family: var(--serif); font-size: 1.15rem; border-radius: 8px; padding: 0.7rem 2rem;
+}
+#releaseGo:hover { color: #fff; opacity: 0.92; }
+#releaseMsg { margin-top: 1.2rem; font-family: var(--serif); font-size: 1.05rem; }
+#releaseMsg.err { color: #8c2f2f; }
+.quiet-action { font-size: 0.88rem; color: var(--faint); }
+#liveBlock { display: none; margin-top: 2rem; }
+#liveBlock .live-url { font-family: var(--mono); font-size: 1.15rem; }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="brand">md.phext.io
+      <span class="sub">A ZIP OF MARKDOWN IS THE DOCUMENT</span>
+    </div>
+    <div id="treeWrap">
+      <div id="pinned"></div>
+      <nav id="tree"></nav>
+      <div id="eraNudge"></div>
+    </div>
+    <div id="vaultBox">
+      <div class="vhead" id="vaultHead">The vault</div>
+      <div id="vaultList"></div>
+    </div>
+    <div class="side-actions">
+      <button id="newFileBtn">New file</button>
+      <button id="importBtn">Import a zip</button>
+      <button id="exportBtn">Export the zip</button>
+      <input type="file" id="importFile" accept=".zip,application/zip" hidden>
+    </div>
+    <div class="side-foot">
+      <span class="keys">⌘K jump · ⌘. scratch · ⌘⇧F focus · ⌘1–9 open a file<br>
+      A file may end with <span style="font-family:var(--mono)">&lt;!-- next: … --&gt;</span> — reopening it places your caret on the note.</span>
+      Flat files are a fine start. When you want addresses in eleven dimensions, try <a href="https://edit.phext.io">edit.phext.io</a>.
+    </div>
+  </aside>
+
+  <main id="main">
+    <header id="chrome">
+      <div>
+        <input id="pathInput" spellcheck="false" title="This file's address in the bundle">
+        <span id="pubAddr"></span>
+      </div>
+      <div class="chrome-right">
+        <span id="savedWord">Saved ✓</span>
+        <span id="stateWord">Drafting</span>
+        <button id="vaultBtn" title="Put this file in the vault">Put in the vault</button>
+        <button id="faceToggle">Cloth</button>
+        <button id="releaseBtn">Release</button>
+      </div>
+    </header>
+    <div id="faces">
+      <section class="face patternFace">
+        <div class="face-name">Pattern</div>
+        <textarea id="editor" spellcheck="true" placeholder=""></textarea>
+      </section>
+      <section class="face clothFace">
+        <div class="face-name">Cloth</div>
+        <div id="cloth"></div>
+      </section>
+    </div>
+    <footer id="statusbar">
+      <span id="countWord"></span>
+      <span class="structures">Insert:
+        <button data-structure="note">a note</button> ·
+        <button data-structure="essay">an essay</button> ·
+        <button data-structure="list">a list</button>
+      </span>
+    </footer>
+  </main>
+</div>
+
+<div id="jumpWrap">
+  <div id="jumpCard">
+    <input id="jumpInput" placeholder="Jump to a file…" spellcheck="false">
+    <div id="jumpList"></div>
+  </div>
+</div>
+
+<section id="releaseScreen">
+  <div class="release-inner">
+    <p class="eyebrow" style="font-size:0.72rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--faint)">Release day</p>
+    <h1>Put it on the web.</h1>
+    <p class="lede">One address, kept. Releasing again never moves it — it only makes a new version.</p>
+
+    <p class="field-label">The bundle's name in the address</p>
+    <input type="text" id="slugInput" placeholder="e.g. garden-notes" spellcheck="false">
+    <div class="big-url" id="bigUrl"></div>
+    <button class="quiet-action" id="copyUrlBtn">Copy the address</button>
+    <span class="quiet-action" id="slugNote"></span>
+
+    <div id="keyRow" style="display:none">
+      <p class="field-label">Edit key for this name</p>
+      <input type="text" id="keyInput" placeholder="The key from the first release" spellcheck="false">
+    </div>
+
+    <p class="field-label">What changed? <span style="text-transform:none;letter-spacing:0">(optional, one line)</span></p>
+    <input type="text" id="changedInput" placeholder="A line for the feed and the footer" spellcheck="false">
+
+    <div>
+      <button id="releaseGo">Release</button>
+      <button class="quiet-action" id="releaseBack" style="margin-left:1rem">Back to writing</button>
+    </div>
+    <p id="releaseMsg"></p>
+
+    <div id="liveBlock">
+      <p style="font-family:var(--serif);font-size:1.5rem;margin:0 0 0.4rem">It's live.</p>
+      <p class="live-url"><a id="liveUrl" href="#" target="_blank" rel="noopener"></a></p>
+      <p class="quiet-action" id="liveMeta"></p>
+      <p><button id="readAsReader" style="border:1px solid var(--accent);color:var(--accent);border-radius:6px;padding:0.45rem 1rem;font-family:var(--serif);font-size:1rem;background:var(--card)">Read it as a reader</button></p>
+    </div>
+
+    <div id="restoreRow" style="display:none;margin-top:2.6rem;border-top:1px solid var(--line);padding-top:1rem">
+      <span class="quiet-action">Something off? The previous version is kept.</span>
+      <button class="quiet-action" id="restoreBtn" style="text-decoration:underline">Restore the previous version</button>
+    </div>
+  </div>
+</section>
+
+<script>
+"use strict";
+/* ════════════════ the model ════════════════
+   A bundle is a set of files. Text files carry their text; anything
+   else rides along as base64, untouched. The vault is a folder like
+   any other — it is simply never published and never served. */
+const LS_KEY = "mdwiz.v1";
+const HOOK_RE = /^<!--\s*next:\s*(.*?)\s*-->$/;
+
+const S = {
+  files: new Map(),        // path -> {kind:'text', text} | {kind:'bin', b64}
+  current: null,           // path of the open file
+  slug: null,              // remembered bundle slug (set at release time)
+  keys: {},                // slug -> edit key (this browser only)
+  publishedHash: null,     // hash of the last released publishable set
+  version: null,
+  view: {},                // path -> {caret, scroll} for exact resumption
+  vaultDates: {},          // path -> ISO date it entered the vault
+  eraDismissed: false,
+  freshSeed: false,        // true only for a brand-new bundle's first open
+};
+
+function isMd(p) { return /\.md$/i.test(p) || /\.markdown$/i.test(p); }
+function isVault(p) { return p === "vault" || p.startsWith("vault/"); }
+function isRootIndex(p) { return !p.includes("/") && /^(index|readme)\.md$/i.test(p); }
+function isScratch(p) { return p.toLowerCase() === "scratch.md"; }
+function incipitOf(text) {
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const s = line.startsWith("#") ? line.replace(/^#+/, "").replace(/#+$/, "").trim()
+            : line.startsWith("> ") ? line.slice(2).trim() : line;
+    if (s) return s;
+  }
+  return null;
+}
+function wordCount(text) {
+  const m = text.trim().split(/\s+/).filter(Boolean);
+  return text.trim() ? m.length : 0;
+}
+function slugify(text) {
+  return text.toLowerCase().replace(/['']/g, "").replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "").slice(0, 48).replace(/-+$/, "");
+}
+/* Sidebar order: pinned first (root index, then scratch), then the
+   tree by path, era by era. The vault never appears here. */
+function sidebarOrder() {
+  const paths = [...S.files.keys()].filter(p => !isVault(p));
+  const idx = paths.filter(isRootIndex).sort((a, b) =>
+    (/^index/i.test(a) ? 0 : 1) - (/^index/i.test(b) ? 0 : 1));
+  const rest = paths.filter(p => !isRootIndex(p) && !isScratch(p)).sort();
+  const scr = paths.filter(isScratch);
+  return [...idx, ...scr, ...rest];
+}
+function publishableFiles() {
+  return [...S.files.entries()]
+    .filter(([p]) => !isVault(p))
+    .sort((a, b) => a[0].localeCompare(b[0]));
+}
+async function bundleHash() {
+  const parts = [];
+  for (const [p, f] of publishableFiles()) {
+    parts.push(p, "\u0000", f.kind === "text" ? "t:" + f.text : "b:" + f.b64, "\u0001");
+  }
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(parts.join("")));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+/* ————— the seeded bundle: born threaded ————— */
+const SEED_INDEX =
+`Dear reader,
+
+This is where [the thing] begins. Start with the line you'd say out loud.
+
+## Notes
+
+## Drafts
+
+## Finished
+`;
+function seedBundle() {
+  S.files = new Map([
+    ["index.md", { kind: "text", text: SEED_INDEX }],
+    ["about.md", { kind: "text", text: "The short version of who you are and what this is.\n" }],
+    ["scratch.md", { kind: "text", text: "# Scratch\n\n" }],
+  ]);
+  S.current = "index.md";
+  S.freshSeed = true;
+}
+const DEMO_FILES = {
+  "index.md": "Dear reader,\n\nThis is where the garden notes begin. Start with the line you'd say out loud.\n\n## Notes\n\n## Drafts\n\n## Finished\n",
+  "about.md": "The short version: a gardener in Nebraska, writing down what the seasons teach.\n",
+  "scratch.md": "# Scratch\n\n## 15 November 2026 · 22:41\n\nFrost on the north beds. The llamas approve of the new fence.\n",
+  "essays/on-beauty.md": "# On Beauty\n\nA garden is an argument made slowly, in green.\n\n> Beauty is the beginning of terror we can just barely endure — and of patience, which endures longer.\n\nSome *small* things, done **daily**:\n\n- Water before the heat\n- Write the line down\n- Leave one bed wild\n\n| Season | Work |\n| ------ | ---- |\n| Spring | Begin |\n| Autumn | Gather |\n",
+  "notes/reading.md": "# Reading\n\n- *The Making of Prince of Persia* — journals as a design tool\n- A bundle is a book that has not decided to be one yet\n",
+};
+function demoBundle() {
+  S.files = new Map(Object.entries(DEMO_FILES).map(([p, t]) => [p, { kind: "text", text: t }]));
+  S.current = "essays/on-beauty.md";
+}
+
+/* ————— zip: read and write, by hand —————
+   Written bundles use the stored method (no compression — markdown
+   is small, and a stored zip is the most legible archive there is).
+   Reading accepts stored and deflated entries. CRC-32 is the zip's
+   own checksum, implemented here in a dozen lines. */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function dosDate(d) {
+  const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+  const date = ((Math.max(0, d.getFullYear() - 1980)) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  return { time, date };
+}
+function buildZip(entries) {
+  // entries: [{path, bytes:Uint8Array}]
+  const enc = new TextEncoder();
+  const chunks = [], central = [];
+  let offset = 0;
+  const now = dosDate(new Date());
+  for (const e of entries) {
+    const name = enc.encode(e.path);
+    const crc = crc32(e.bytes);
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true);
+    local.setUint16(6, 0x0800, true);         // UTF-8 names
+    local.setUint16(8, 0, true);              // stored
+    local.setUint16(10, now.time, true);
+    local.setUint16(12, now.date, true);
+    local.setUint32(14, crc, true);
+    local.setUint32(18, e.bytes.length, true);
+    local.setUint32(22, e.bytes.length, true);
+    local.setUint16(26, name.length, true);
+    chunks.push(new Uint8Array(local.buffer), name, e.bytes);
+    const cen = new DataView(new ArrayBuffer(46));
+    cen.setUint32(0, 0x02014b50, true);
+    cen.setUint16(4, 20, true); cen.setUint16(6, 20, true);
+    cen.setUint16(8, 0x0800, true); cen.setUint16(10, 0, true);
+    cen.setUint16(12, now.time, true); cen.setUint16(14, now.date, true);
+    cen.setUint32(16, crc, true);
+    cen.setUint32(20, e.bytes.length, true); cen.setUint32(24, e.bytes.length, true);
+    cen.setUint16(28, name.length, true);
+    cen.setUint32(42, offset, true);
+    central.push(new Uint8Array(cen.buffer), name);
+    offset += 30 + name.length + e.bytes.length;
+  }
+  const cdSize = central.reduce((n, c) => n + c.length, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, entries.length, true); end.setUint16(10, entries.length, true);
+  end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+  return new Blob([...chunks, ...central, new Uint8Array(end.buffer)], { type: "application/zip" });
+}
+async function readZip(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const view = new DataView(arrayBuffer);
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 22 - 65536); i--) {
+    if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("not a zip archive");
+  const count = view.getUint16(eocd + 10, true);
+  let off = view.getUint32(eocd + 16, true);
+  const dec = new TextDecoder();
+  const out = new Map();
+  const TEXT_EXT = /\.(md|markdown|txt|text|html|css|js|json|xml|csv|svg)$/i;
+  for (let n = 0; n < count; n++) {
+    if (view.getUint32(off, true) !== 0x02014b50) break;
+    const method = view.getUint16(off + 10, true);
+    const compSize = view.getUint32(off + 20, true);
+    const nameLen = view.getUint16(off + 28, true);
+    const extraLen = view.getUint16(off + 30, true);
+    const commentLen = view.getUint16(off + 32, true);
+    const localOff = view.getUint32(off + 42, true);
+    const name = dec.decode(bytes.subarray(off + 46, off + 46 + nameLen));
+    off += 46 + nameLen + extraLen + commentLen;
+    if (name.endsWith("/")) continue;
+    if (name.startsWith("/") || name.includes("\\") || name.split("/").includes("..")) continue;
+    const lNameLen = view.getUint16(localOff + 26, true);
+    const lExtraLen = view.getUint16(localOff + 28, true);
+    const dataStart = localOff + 30 + lNameLen + lExtraLen;
+    const comp = bytes.subarray(dataStart, dataStart + compSize);
+    let raw;
+    if (method === 0) raw = comp.slice();
+    else if (method === 8) {
+      const stream = new Blob([comp]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      raw = new Uint8Array(await new Response(stream).arrayBuffer());
+    } else continue;
+    if (TEXT_EXT.test(name)) out.set(name, { kind: "text", text: dec.decode(raw) });
+    else {
+      let bin = "";
+      raw.forEach(b => { bin += String.fromCharCode(b); });
+      out.set(name, { kind: "bin", b64: btoa(bin) });
+    }
+  }
+  if (![...out.keys()].some(isMd)) throw new Error("that zip holds no markdown files");
+  return out;
+}
+function entriesForZip(includeVault) {
+  const enc = new TextEncoder();
+  const list = includeVault ? [...S.files.entries()].sort((a, b) => a[0].localeCompare(b[0])) : publishableFiles();
+  return list.map(([p, f]) => ({
+    path: p,
+    bytes: f.kind === "text" ? enc.encode(f.text) : Uint8Array.from(atob(f.b64), c => c.charCodeAt(0)),
+  }));
+}
+
+/* ————— persistence: autosave as an invariant ————— */
+let saveTimer = null;
+function persist() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try {
+      const data = {
+        files: Object.fromEntries([...S.files].map(([p, f]) => [p, f])),
+        current: S.current, slug: S.slug, keys: S.keys,
+        publishedHash: S.publishedHash, version: S.version,
+        view: S.view, vaultDates: S.vaultDates, eraDismissed: S.eraDismissed,
+      };
+      localStorage.setItem(LS_KEY, JSON.stringify(data));
+      flashSaved();
+    } catch (e) { /* storage full or unavailable: the draft lives in memory */ }
+  }, 300);
+}
+function restore() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return false;
+    const d = JSON.parse(raw);
+    S.files = new Map(Object.entries(d.files || {}));
+    if (![...S.files.keys()].some(isMd)) return false;
+    S.current = d.current && S.files.has(d.current) ? d.current : sidebarOrder()[0];
+    S.slug = d.slug || null;
+    S.keys = d.keys || {};
+    S.publishedHash = d.publishedHash || null;
+    S.version = d.version || null;
+    S.view = d.view || {};
+    S.vaultDates = d.vaultDates || {};
+    S.eraDismissed = !!d.eraDismissed;
+    return true;
+  } catch (e) { return false; }
+}
+function flashSaved() {
+  const el = document.getElementById("savedWord");
+  el.classList.add("show");
+  clearTimeout(flashSaved.t);
+  flashSaved.t = setTimeout(() => el.classList.remove("show"), 1600);
+}
+
+/* ════════════════ the faces ════════════════ */
+const editor = document.getElementById("editor");
+const cloth = document.getElementById("cloth");
+const renderCache = new Map();
+
+function splitBlocks(text) {
+  // Blocks are blank-line-separated, fence-aware. Each block knows the
+  // line it starts on, so Pattern and Cloth share a block index.
+  const lines = text.split("\n");
+  const blocks = [];
+  let cur = [], start = 0, inFence = false;
+  const flush = endLine => {
+    if (cur.length) blocks.push({ startLine: start, endLine, text: cur.join("\n") });
+    cur = [];
+  };
+  lines.forEach((line, i) => {
+    if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+    if (!inFence && line.trim() === "") { flush(i - 1); start = i + 1; }
+    else { if (!cur.length) start = i; cur.push(line); }
+  });
+  flush(lines.length - 1);
+  return blocks;
+}
+function fnv(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(36);
+}
+let renderSeq = 0;
+async function renderCloth() {
+  const seq = ++renderSeq;
+  const f = S.files.get(S.current);
+  if (!f || f.kind !== "text") { cloth.innerHTML = ""; return; }
+  const blocks = splitBlocks(f.text);
+  cloth._blocks = blocks;
+  const htmls = await Promise.all(blocks.map(async b => {
+    const key = fnv(b.text);
+    if (renderCache.has(key)) return renderCache.get(key);
+    try {
+      const r = await fetch("/api/render", { method: "POST", body: b.text });
+      const html = await r.text();
+      renderCache.set(key, html);
+      return html;
+    } catch (e) { return ""; }
+  }));
+  if (seq !== renderSeq) return; // a newer render already owns the face
+  cloth.innerHTML = htmls.map((h, i) => `<div class="blk" data-i="${i}">${h}</div>`).join("");
+  markCaretBlock();
+}
+let renderTimer = null;
+function scheduleRender() {
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(renderCloth, 150);
+}
+function blockIndexAtCaret() {
+  const blocks = cloth._blocks || [];
+  if (!blocks.length) return -1;
+  const upto = editor.value.slice(0, editor.selectionStart);
+  const line = upto.split("\n").length - 1;
+  for (let i = 0; i < blocks.length; i++) {
+    if (line >= blocks[i].startLine && line <= blocks[i].endLine) return i;
+  }
+  return blocks.length - 1;
+}
+function markCaretBlock() {
+  const i = blockIndexAtCaret();
+  cloth.querySelectorAll(".blk").forEach(el => {
+    el.classList.toggle("hl", Number(el.dataset.i) === i);
+  });
+}
+cloth.addEventListener("click", e => {
+  const blk = e.target.closest(".blk");
+  if (!blk || !cloth._blocks) return;
+  const b = cloth._blocks[Number(blk.dataset.i)];
+  if (!b) return;
+  const lines = editor.value.split("\n");
+  let off = 0;
+  for (let i = 0; i < b.startLine; i++) off += lines[i].length + 1;
+  editor.focus();
+  editor.setSelectionRange(off, off);
+  markCaretBlock();
+});
+/* Scrolling either face scrolls the other, proportionally. */
+let syncing = false;
+function syncScroll(from, to) {
+  from.addEventListener("scroll", () => {
+    if (syncing) return;
+    syncing = true;
+    const fRange = from.scrollHeight - from.clientHeight;
+    const tRange = to.scrollHeight - to.clientHeight;
+    if (fRange > 0 && tRange > 0) to.scrollTop = (from.scrollTop / fRange) * tRange;
+    requestAnimationFrame(() => { syncing = false; });
+  });
+}
+syncScroll(editor, cloth);
+syncScroll(cloth, editor);
+
+/* ════════════════ opening files, exactly ════════════════ */
+function hookOf(text) {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].trim()) continue;
+    const m = lines[i].match(HOOK_RE);
+    if (m) {
+      const lineStart = lines.slice(0, i).reduce((n, l) => n + l.length + 1, 0);
+      const noteStart = lineStart + lines[i].indexOf(m[1]);
+      return { start: noteStart, end: noteStart + m[1].length };
+    }
+    return null; // only the last non-empty line can be the hook
+  }
+  return null;
+}
+function openFile(path, opts = {}) {
+  const f = S.files.get(path);
+  if (!f) return;
+  // Remember where the last file was left.
+  if (S.current && S.current !== path) {
+    S.view[S.current] = { caret: editor.selectionStart, scroll: editor.scrollTop };
+  }
+  S.current = path;
+  document.getElementById("pathInput").value = path;
+  if (f.kind === "text") {
+    editor.value = f.text;
+    editor.disabled = false;
+  } else {
+    editor.value = "";
+    editor.disabled = true;
+  }
+  renderSidebar();
+  updateChrome();
+  scheduleRender();
+  // Exact resumption: caret and scroll as they were left — or, for a
+  // file ending in a next-line hook, the caret goes to the hook.
+  requestAnimationFrame(() => {
+    editor.focus();
+    const hook = f.kind === "text" ? hookOf(f.text) : null;
+    if (hook && !opts.keepCaret) {
+      editor.setSelectionRange(hook.start, hook.end);
+      editor.scrollTop = editor.scrollHeight;
+    } else if (S.freshSeed && path === "index.md") {
+      const at = editor.value.indexOf("[the thing]");
+      if (at >= 0) editor.setSelectionRange(at, at + "[the thing]".length);
+      S.freshSeed = false;
+    } else if (S.view[path] && !opts.fresh) {
+      editor.setSelectionRange(S.view[path].caret, S.view[path].caret);
+      editor.scrollTop = S.view[path].scroll;
+    } else if (opts.caret != null) {
+      editor.setSelectionRange(opts.caret, opts.caret);
+    }
+    markCaretBlock();
+    updateCount();
+  });
+}
+editor.addEventListener("input", () => {
+  const f = S.files.get(S.current);
+  if (f && f.kind === "text") f.text = editor.value;
+  maybeSilentRename();
+  persist();
+  scheduleRender();
+  updateCount();
+  scheduleStateCheck();
+});
+editor.addEventListener("keyup", markCaretBlock);
+editor.addEventListener("click", markCaretBlock);
+document.addEventListener("selectionchange", () => {
+  if (document.activeElement === editor) { markCaretBlock(); updateCount(); }
+});
+function updateCount() {
+  const el = document.getElementById("countWord");
+  const sel = editor.selectionEnd - editor.selectionStart;
+  if (sel > 0) {
+    el.textContent = wordCount(editor.value.slice(editor.selectionStart, editor.selectionEnd)) + " in selection";
+    return;
+  }
+  const f = S.files.get(S.current);
+  if (f && f.kind === "text" && f.text.trim() === "") el.textContent = "the loom is threaded";
+  else el.textContent = "";
+}
+/* A file born as note.md takes its name from its first line, silently,
+   the first time the line says something nameable. */
+function maybeSilentRename() {
+  const p = S.current;
+  if (!p || !/^note(-\d+)?\.md$/.test(p)) return;
+  const f = S.files.get(p);
+  if (!f || f.kind !== "text") return;
+  const inc = incipitOf(f.text);
+  if (!inc) return;
+  const slug = slugify(inc);
+  if (!slug) return;
+  const target = slug + ".md";
+  if (target === p || S.files.has(target)) return;
+  renameFile(p, target, true);
+}
+function renameFile(oldPath, newPath, silent = false) {
+  if (!S.files.has(oldPath) || S.files.has(newPath)) return false;
+  if (!validPath(newPath)) return false;
+  const entries = [...S.files.entries()].map(([p, f]) => [p === oldPath ? newPath : p, f]);
+  S.files = new Map(entries);
+  if (S.view[oldPath]) { S.view[newPath] = S.view[oldPath]; delete S.view[oldPath]; }
+  if (S.vaultDates[oldPath]) { S.vaultDates[newPath] = S.vaultDates[oldPath]; delete S.vaultDates[oldPath]; }
+  if (S.current === oldPath) {
+    S.current = newPath;
+    document.getElementById("pathInput").value = newPath;
+  }
+  if (!silent) { renderSidebar(); updateChrome(); }
+  else renderSidebar();
+  persist();
+  return true;
+}
+function validPath(p) {
+  if (!p || p.length > 512 || p.startsWith("/") || p.includes("\\")) return false;
+  return p.split("/").every(s => s && s !== "." && s !== "..");
+}
+
+/* ════════════════ the sidebar: a pattern card ════════════════ */
+function entryHtml(p, depth) {
+  const f = S.files.get(p);
+  const inc = f.kind === "text" ? (incipitOf(f.text) || p) : p;
+  const wc = f.kind === "text" ? `<span class="wc">${wordCount(f.text)}</span>` : "";
+  return `<div class="entry ${S.current === p ? "on" : ""} depth${depth}" data-path="${escapeAttr(p)}">
+    ${wc}<span class="inc">${escapeHtml(inc)}</span><span class="pth">${escapeHtml(p)}</span></div>`;
+}
+function renderSidebar() {
+  const order = sidebarOrder();
+  const pinned = order.filter(p => isRootIndex(p) || isScratch(p));
+  const rest = order.filter(p => !isRootIndex(p) && !isScratch(p));
+  document.getElementById("pinned").innerHTML =
+    pinned.length ? `<div class="pinned">${pinned.map(p => entryHtml(p, 0)).join("")}</div>` : "";
+  let html = "", era = null;
+  for (const p of rest) {
+    const seg = p.includes("/") ? p.split("/")[0] : null;
+    if (seg !== era) {
+      era = seg;
+      if (era) html += `<div class="era-name">${escapeHtml(era)}</div>`;
+    }
+    html += entryHtml(p, p.split("/").length - 1);
+  }
+  document.getElementById("tree").innerHTML = html;
+  // The vault, at the foot, collapsed until asked.
+  const vaultPaths = [...S.files.keys()].filter(isVault).sort();
+  document.getElementById("vaultHead").textContent =
+    vaultPaths.length ? `The vault · ${vaultPaths.length} put away` : "The vault";
+  document.getElementById("vaultList").innerHTML = vaultPaths.map(p => {
+    const f = S.files.get(p);
+    const inc = f.kind === "text" ? (incipitOf(f.text) || p) : p;
+    const when = S.vaultDates[p] ? new Date(S.vaultDates[p]).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" }) : "";
+    return `<div class="ventry"><span class="inc">${escapeHtml(inc)}</span>
+      <span class="meta">${escapeHtml(p)}${when ? " · put away " + when : ""}</span>
+      <button data-restore="${escapeAttr(p)}">Restore</button></div>`;
+  }).join("");
+  document.querySelectorAll("#vaultList [data-restore]").forEach(b => {
+    b.addEventListener("click", () => restoreFromVault(b.dataset.restore));
+  });
+  document.querySelectorAll(".entry").forEach(el => {
+    el.addEventListener("click", () => openFile(el.dataset.path));
+  });
+  // Eras: six loose files is an era's worth.
+  const loose = rest.filter(p => !p.includes("/")).length;
+  const nudge = document.getElementById("eraNudge");
+  if (loose >= 6 && !S.eraDismissed) {
+    nudge.style.display = "block";
+    nudge.innerHTML = `Getting to be an era's worth. Group these?
+      <button id="eraMake">Make it an era</button> <button id="eraNo">Not now</button>
+      <span id="eraForm" style="display:none"><input id="eraName" value="era" spellcheck="false"> <button id="eraGo">Move them in</button></span>`;
+    document.getElementById("eraNo").onclick = () => { S.eraDismissed = true; nudge.style.display = "none"; persist(); };
+    document.getElementById("eraMake").onclick = () => { document.getElementById("eraForm").style.display = "inline"; document.getElementById("eraName").select(); };
+    document.getElementById("eraGo").onclick = () => {
+      const name = slugify(document.getElementById("eraName").value) || "era";
+      for (const p of rest.filter(x => !x.includes("/"))) {
+        const entries = [...S.files.entries()].map(([k, v]) => [k === p ? `${name}/${p}` : k, v]);
+        S.files = new Map(entries);
+        if (S.current === p) S.current = `${name}/${p}`;
+      }
+      S.eraDismissed = true;
+      renderSidebar(); persist();
+      if (S.current) document.getElementById("pathInput").value = S.current;
+    };
+  } else {
+    nudge.style.display = "none";
+  }
+}
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function escapeAttr(s) { return escapeHtml(s); }
+
+document.getElementById("vaultHead").addEventListener("click", () => {
+  const l = document.getElementById("vaultList");
+  l.style.display = l.style.display === "block" ? "none" : "block";
+});
+function putInVault(path) {
+  if (!S.files.has(path) || isVault(path)) return;
+  const target = "vault/" + path;
+  if (S.files.has(target)) return;
+  renameFile(path, target);
+  S.vaultDates[target] = new Date().toISOString();
+  delete S.vaultDates[path];
+  const next = sidebarOrder()[0];
+  if (next) openFile(next);
+  renderSidebar();
+  persist();
+  scheduleStateCheck();
+}
+function restoreFromVault(path) {
+  const target = path.replace(/^vault\//, "");
+  if (S.files.has(target)) return;
+  renameFile(path, target);
+  openFile(target);
+}
+document.getElementById("vaultBtn").addEventListener("click", () => putInVault(S.current));
+
+/* ————— chrome: address, state, count ————— */
+let stateTimer = null;
+function scheduleStateCheck() {
+  clearTimeout(stateTimer);
+  stateTimer = setTimeout(updateStateWord, 600);
+}
+async function updateStateWord() {
+  const el = document.getElementById("stateWord");
+  if (!S.publishedHash) { el.textContent = "Drafting"; return; }
+  const h = await bundleHash();
+  el.textContent = h === S.publishedHash ? "Current" : "Diverged";
+}
+function updateChrome() {
+  const addr = document.getElementById("pubAddr");
+  if (S.slug && S.publishedHash) {
+    const stem = S.current.replace(/\.(md|markdown)$/i, "");
+    addr.innerHTML = `at <a href="/b/${S.slug}/${stem}" target="_blank" rel="noopener">${location.host}/b/${S.slug}/${stem}</a>`;
+  } else addr.textContent = "";
+  document.getElementById("releaseBtn").textContent =
+    S.publishedHash ? "Re-publish (Your Version)" : "Release";
+  updateStateWord();
+}
+
+/* ————— new files, structures, import, export ————— */
+function titleCase(slug) {
+  return slug.replace(/[-_]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
+document.getElementById("newFileBtn").addEventListener("click", () => {
+  let name = "note.md", i = 2;
+  while (S.files.has(name)) name = `note-${i++}.md`;
+  const title = titleCase(name.replace(/\.md$/, ""));
+  S.files.set(name, { kind: "text", text: `# ${title}\n\n` });
+  renderSidebar(); persist();
+  openFile(name, { fresh: true, caret: S.files.get(name).text.length });
+});
+const STRUCTURES = {
+  note: "## A note\n\nThe thought, before it cools:\n\n",
+  essay: "# A working title\n\nThe line you'd say out loud, first.\n\n## The turn\n\n## What it changes\n\n",
+  list: "# A list\n\n- First\n- Second\n- Third\n",
+};
+document.querySelectorAll("[data-structure]").forEach(b => {
+  b.addEventListener("click", () => {
+    const text = STRUCTURES[b.dataset.structure];
+    const at = editor.selectionStart;
+    editor.setRangeText(text, at, at, "end");
+    editor.dispatchEvent(new Event("input"));
+    editor.focus();
+  });
+});
+document.getElementById("importBtn").addEventListener("click", () =>
+  document.getElementById("importFile").click());
+document.getElementById("importFile").addEventListener("change", async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const files = await readZip(await file.arrayBuffer());
+    if (!confirm("Replace the current bundle with this zip? The current draft is only in this browser.")) return;
+    S.files = files;
+    S.current = sidebarOrder()[0];
+    S.publishedHash = null; S.version = null; S.slug = null;
+    renderSidebar(); persist(); openFile(S.current, { fresh: true }); updateChrome();
+  } catch (err) { alert(err.message); }
+  e.target.value = "";
+});
+document.getElementById("exportBtn").addEventListener("click", () => {
+  const blob = buildZip(entriesForZip(true));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = (S.slug || "markdown-bundle") + ".zip";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+});
+document.getElementById("pathInput").addEventListener("change", e => {
+  const target = e.target.value.trim();
+  if (target && target !== S.current) {
+    if (!renameFile(S.current, target)) e.target.value = S.current;
+  }
+});
+document.getElementById("faceToggle").addEventListener("click", e => {
+  const on = document.body.classList.toggle("show-cloth");
+  e.target.textContent = on ? "Pattern" : "Cloth";
+});
+
+/* ————— focus mode ————— */
+function toggleFocus() { document.body.classList.toggle("focused"); }
+document.addEventListener("mousemove", e => {
+  const edge = e.clientX < 28 || e.clientX > innerWidth - 28 || e.clientY < 28 || e.clientY > innerHeight - 28;
+  document.body.classList.toggle("peek", edge);
+});
+
+/* ————— jump: Cmd/Ctrl-K, and the direct keys ————— */
+const jumpWrap = document.getElementById("jumpWrap");
+const jumpInput = document.getElementById("jumpInput");
+const jumpList = document.getElementById("jumpList");
+let jumpSel = 0, jumpItems = [];
+function fuzzy(q, s) {
+  q = q.toLowerCase(); s = s.toLowerCase();
+  let qi = 0, score = 0;
+  for (let i = 0; i < s.length && qi < q.length; i++) {
+    if (s[i] === q[qi]) { qi++; score += s[i - 1] === "/" || i === 0 ? 3 : 1; }
+  }
+  return qi === q.length ? score : -1;
+}
+function renderJump() {
+  const q = jumpInput.value;
+  jumpItems = sidebarOrder()
+    .map(p => ({ p, score: q ? Math.max(fuzzy(q, p), fuzzy(q, incipitOf(S.files.get(p).text || "") || "")) : 1 }))
+    .filter(x => x.score >= 0)
+    .sort((a, b) => b.score - a.score)
+    .map(x => x.p);
+  jumpSel = Math.min(jumpSel, Math.max(0, jumpItems.length - 1));
+  jumpList.innerHTML = jumpItems.map((p, i) => {
+    const f = S.files.get(p);
+    const inc = f.kind === "text" ? (incipitOf(f.text) || p) : p;
+    return `<div class="jentry ${i === jumpSel ? "sel" : ""}" data-path="${escapeAttr(p)}">
+      <span class="inc">${escapeHtml(inc)}</span><span class="pth">${escapeHtml(p)}</span></div>`;
+  }).join("") || `<div class="jentry">Nothing by that name.</div>`;
+  jumpList.querySelectorAll(".jentry[data-path]").forEach(el => {
+    el.addEventListener("click", () => { closeJump(); openFile(el.dataset.path); });
+  });
+}
+function openJump() {
+  jumpWrap.classList.add("open");
+  jumpInput.value = ""; jumpSel = 0;
+  renderJump();
+  jumpInput.focus();
+}
+function closeJump() { jumpWrap.classList.remove("open"); editor.focus(); }
+jumpInput.addEventListener("input", () => { jumpSel = 0; renderJump(); });
+jumpInput.addEventListener("keydown", e => {
+  if (e.key === "ArrowDown") { e.preventDefault(); jumpSel = Math.min(jumpSel + 1, jumpItems.length - 1); renderJump(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); jumpSel = Math.max(jumpSel - 1, 0); renderJump(); }
+  else if (e.key === "Enter" && jumpItems[jumpSel]) { closeJump(); openFile(jumpItems[jumpSel]); }
+  else if (e.key === "Escape") closeJump();
+});
+jumpWrap.addEventListener("click", e => { if (e.target === jumpWrap) closeJump(); });
+
+function jumpToScratch() {
+  const p = [...S.files.keys()].find(isScratch);
+  if (!p) return;
+  openFile(p, { keepCaret: true });
+  const now = new Date();
+  const stamp = now.toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" }) +
+    " · " + now.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+  const f = S.files.get(p);
+  const heading = `## ${stamp}\n\n`;
+  // A fresh heading at the top, after the file's own title line if any.
+  const lines = f.text.split("\n");
+  let at = 0;
+  if (lines[0] && lines[0].startsWith("# ")) at = lines[0].length + 1;
+  f.text = f.text.slice(0, at) + (at && !f.text.slice(at).startsWith("\n") ? "\n" : "") + heading + f.text.slice(at);
+  editor.value = f.text;
+  const caret = at + (at ? 1 : 0) + heading.length;
+  editor.setSelectionRange(caret, caret);
+  editor.focus();
+  persist(); scheduleRender(); renderSidebar();
+}
+document.addEventListener("keydown", e => {
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); openJump(); }
+  else if (mod && e.key === ".") { e.preventDefault(); jumpToScratch(); }
+  else if (mod && e.shiftKey && e.key.toLowerCase() === "f") { e.preventDefault(); toggleFocus(); }
+  else if (mod && /^[1-9]$/.test(e.key)) {
+    const order = sidebarOrder();
+    const p = order[Number(e.key) - 1];
+    if (p) { e.preventDefault(); openFile(p); }
+  }
+});
+
+/* ════════════════ release day ════════════════ */
+const releaseScreen = document.getElementById("releaseScreen");
+const slugInput = document.getElementById("slugInput");
+const keyRow = document.getElementById("keyRow");
+const keyInput = document.getElementById("keyInput");
+const bigUrl = document.getElementById("bigUrl");
+const slugNote = document.getElementById("slugNote");
+const releaseMsg = document.getElementById("releaseMsg");
+const releaseGo = document.getElementById("releaseGo");
+let slugMeta = null; // {exists, version, has_previous} from the server
+
+function publicUrl(slug) { return `${location.origin}/b/${slug}/`; }
+function refreshRelease() {
+  const slug = slugInput.value.trim();
+  bigUrl.textContent = slug ? publicUrl(slug) : `${location.origin}/b/…/`;
+  releaseGo.textContent = S.publishedHash && slug === S.slug ? "Re-publish (Your Version)" : "Release";
+  keyRow.style.display = "none";
+  slugNote.textContent = "";
+  document.getElementById("restoreRow").style.display = "none";
+  slugMeta = null;
+  if (!slug) return;
+  if (S.keys[slug]) keyInput.value = S.keys[slug];
+  fetch(`/api/bundles/${encodeURIComponent(slug)}`)
+    .then(r => (r.ok ? r.json() : null))
+    .then(meta => {
+      slugMeta = meta;
+      if (!meta) { slugNote.textContent = "This name is free."; return; }
+      slugNote.textContent = `Taken — currently Version ${meta.version}.`;
+      if (!S.keys[slug]) keyRow.style.display = "block";
+      if (meta.has_previous && slug === S.slug) document.getElementById("restoreRow").style.display = "block";
+      if (slug === S.slug) releaseGo.textContent = "Re-publish (Your Version)";
+    })
+    .catch(() => {});
+}
+slugInput.addEventListener("input", () => {
+  clearTimeout(slugInput.t);
+  slugInput.t = setTimeout(refreshRelease, 250);
+});
+document.getElementById("copyUrlBtn").addEventListener("click", () => {
+  navigator.clipboard && navigator.clipboard.writeText(bigUrl.textContent);
+});
+document.getElementById("releaseBtn").addEventListener("click", () => {
+  releaseScreen.classList.add("open");
+  slugInput.value = S.slug || "";
+  document.getElementById("liveBlock").style.display = "none";
+  releaseMsg.textContent = "";
+  refreshRelease();
+  slugInput.focus();
+});
+document.getElementById("releaseBack").addEventListener("click", () => {
+  releaseScreen.classList.remove("open");
+  editor.focus();
+});
+releaseGo.addEventListener("click", async () => {
+  const slug = slugInput.value.trim().toLowerCase();
+  slugInput.value = slug;
+  releaseMsg.className = "";
+  releaseMsg.textContent = "Releasing…";
+  if (!/^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$/.test(slug)) {
+    releaseMsg.className = "err";
+    releaseMsg.textContent = "A name is lowercase letters, digits, and hyphens — it becomes the address, so it has to be one the address can carry.";
+    return;
+  }
+  const key = S.keys[slug] || keyInput.value.trim() || undefined;
+  try {
+    const zip = buildZip(entriesForZip(false)); // the vault stays home
+    const headers = { "X-Slug": slug, "Content-Type": "application/zip" };
+    if (key) headers["X-Edit-Key"] = key;
+    const changed = document.getElementById("changedInput").value.trim();
+    if (changed) headers["X-Changed"] = changed;
+    const r = await fetch("/api/publish", { method: "POST", headers, body: zip });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `the server answered ${r.status}`);
+    if (data.edit_key) S.keys[slug] = data.edit_key;
+    else if (key) S.keys[slug] = key;
+    S.slug = slug;
+    S.version = data.version;
+    S.publishedHash = await bundleHash();
+    persist(); updateChrome(); renderSidebar();
+    releaseMsg.textContent = "";
+    const live = document.getElementById("liveBlock");
+    live.style.display = "block";
+    const a = document.getElementById("liveUrl");
+    a.href = publicUrl(slug);
+    a.textContent = publicUrl(slug);
+    document.getElementById("liveMeta").textContent =
+      `Version ${data.version} · ${new Date(data.published_at * 1000).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}` +
+      (data.edit_key ? " · Your edit key is saved in this browser — it is the only copy." : "");
+    refreshRelease();
+  } catch (err) {
+    releaseMsg.className = "err";
+    releaseMsg.textContent = err.message;
+  }
+});
+document.getElementById("readAsReader").addEventListener("click", () => {
+  if (S.slug) window.open(publicUrl(S.slug), "_blank", "noopener");
+});
+document.getElementById("restoreBtn").addEventListener("click", async () => {
+  const slug = S.slug;
+  const key = S.keys[slug];
+  if (!slug || !key) return;
+  releaseMsg.className = "";
+  releaseMsg.textContent = "Restoring the previous version…";
+  try {
+    const r = await fetch("/api/restore", { method: "POST", headers: { "X-Slug": slug, "X-Edit-Key": key } });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `the server answered ${r.status}`);
+    S.version = data.version;
+    // The local draft no longer matches what is published.
+    S.publishedHash = "restored";
+    persist(); updateChrome();
+    releaseMsg.textContent = `Restored. The bundle is at Version ${data.version} again; your local draft is untouched and now Diverged.`;
+    refreshRelease();
+  } catch (err) {
+    releaseMsg.className = "err";
+    releaseMsg.textContent = err.message;
+  }
+});
+
+/* ════════════════ boot: a file already open ════════════════ */
+function boot() {
+  const params = new URLSearchParams(location.search);
+  if (params.has("demo")) demoBundle();
+  else if (!restore()) seedBundle();
+  renderSidebar();
+  openFile(S.current || sidebarOrder()[0], {});
+  updateChrome();
+  if (params.has("release")) {
+    // ?release=<slug> opens the release screen directly (a shareable
+    // view of the one publish screen, and how it is photographed).
+    slugInput.value = params.get("release") || S.slug || "";
+    releaseScreen.classList.add("open");
+    refreshRelease();
+  }
+}
+if (new URLSearchParams(location.search).has("selftest")) {
+  runSelfTest();
+} else {
+  boot();
+}
+
+/* ————— in-page self-test (?selftest=1) —————
+   Exercises the model headlessly: seeding, the vault, silent
+   renaming, the three release states, exact resumption. Results are
+   written into the document for the end-to-end script to read. */
+async function runSelfTest() {
+  const lines = [];
+  const check = (name, cond, detail = "") =>
+    lines.push(`${cond ? "PASS" : "FAIL"} ${name}${cond ? "" : " — " + detail}`);
+  try { localStorage.removeItem(LS_KEY); } catch (e) {}
+  // Seeding
+  seedBundle();
+  check("seed: three files", ["index.md", "about.md", "scratch.md"].every(p => S.files.has(p)));
+  check("seed: letter with the bracket", S.files.get("index.md").text.includes("[the thing]"));
+  check("seed: about is one line", S.files.get("about.md").text.trim() === "The short version of who you are and what this is.");
+  // Render the real first screen and probe its visible text.
+  renderSidebar();
+  openFile("index.md", {});
+  await new Promise(r => setTimeout(r, 350));
+  const visible = document.body.innerText || "";
+  check("seed: first screen shows the letter", visible.includes("Dear reader,"));
+  check("seed: no zero counter, no Untitled",
+    !visible.includes("Unti" + "tled") && !visible.includes("0 " + "words"));
+  // Vault
+  S.files.set("draft.md", { kind: "text", text: "# Draft\n\nx\n" });
+  putInVault("draft.md");
+  check("vault: moved", S.files.has("vault/draft.md") && !S.files.has("draft.md"));
+  check("vault: excluded from publish", !publishableFiles().some(([p]) => p.startsWith("vault/")));
+  restoreFromVault("vault/draft.md");
+  check("vault: restored", S.files.has("draft.md") && !S.files.has("vault/draft.md"));
+  // Silent rename from the first line
+  S.files.set("note.md", { kind: "text", text: "# Field Notes\n\nbody\n" });
+  S.current = "note.md";
+  maybeSilentRename();
+  check("rename: note takes its first line's name", S.files.has("field-notes.md") && S.current === "field-notes.md");
+  // The three states
+  S.files.delete("field-notes.md");
+  S.publishedHash = null;
+  await updateStateWord();
+  check("state: Drafting before release", document.getElementById("stateWord").textContent === "Drafting");
+  S.publishedHash = await bundleHash();
+  await updateStateWord();
+  check("state: Current when local matches", document.getElementById("stateWord").textContent === "Current");
+  S.files.get("index.md").text += "\nOne more line.\n";
+  await updateStateWord();
+  check("state: Diverged after an edit", document.getElementById("stateWord").textContent === "Diverged");
+  // Exact resumption
+  S.view["index.md"] = { caret: 12, scroll: 0 };
+  persist();
+  await new Promise(r => setTimeout(r, 450));
+  check("resumption: caret recorded", (() => {
+    const d = JSON.parse(localStorage.getItem(LS_KEY));
+    return d && d.view["index.md"] && d.view["index.md"].caret === 12;
+  })());
+  // The hook
+  const hook = hookOf("# T\n\nbody\n\n<!-- next: ask about the fence -->\n");
+  check("hook: found and selects the note", !!hook && hook.end > hook.start);
+  const pass = lines.every(l => l.startsWith("PASS"));
+  document.title = pass ? "SELFTEST PASS" : "SELFTEST FAIL";
+  document.body.innerHTML = `<pre id="selftest-out">${lines.join("\n")}</pre>`;
+}
+</script>
+</body>
+</html>
