@@ -14,6 +14,7 @@
 //! Usage: markdown-wizard [--dir <data-dir>] [--port 8090] [--host 127.0.0.1]
 
 mod bundle;
+mod cloud;
 mod fed;
 mod http;
 mod mcp;
@@ -35,6 +36,7 @@ use bundle::{
     constant_time_eq, is_markdown_path, is_vault_path, sha256_hex, valid_bundle_path, valid_slug,
     MAX_ZIP_BYTES,
 };
+use cloud::CloudStore;
 use http::{CacheClass, HTML, JSON, TEXT};
 use store::{PublishError, PublishOutcome, Store};
 use wordpress::WpStore;
@@ -132,6 +134,7 @@ fn main() {
             Arc::new(fed::Fed::open(&cfg.dir, off).expect("disabled federation state"))
         }
     };
+    let cloud = Arc::new(CloudStore::new(cfg.dir.clone()));
     let listener = TcpListener::bind(format!("{}:{}", cfg.host, cfg.port)).unwrap_or_else(|e| {
         eprintln!("markdown-wizard: cannot bind {}:{}: {e}", cfg.host, cfg.port);
         std::process::exit(1);
@@ -157,10 +160,11 @@ fn main() {
                 let work = work.clone();
                 let wp = wp.clone();
                 let fed = fed.clone();
+                let cloud = cloud.clone();
                 std::thread::spawn(move || {
                     let mut stream = stream;
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-                    handle(&mut stream, &store, &work, &wp, &fed);
+                    handle(&mut stream, &store, &work, &wp, &fed, &cloud);
                 });
             }
             Err(_) => continue,
@@ -185,6 +189,7 @@ fn handle(
     work: &Arc<WorkStore>,
     wp: &Arc<WpStore>,
     fed: &Arc<fed::Fed>,
+    cloudstore: &Arc<CloudStore>,
 ) {
     let cloned = match stream.try_clone() {
         Ok(s) => s,
@@ -238,18 +243,24 @@ fn handle(
             let fragment = render::render_markdown(&md);
             http::send_response(stream, 200, HTML, fragment.as_bytes(), CacheClass::NoStore, &headers, false)
         }
-        ("POST", "/api/publish") => handle_publish(stream, &mut reader, &headers, store, wp),
-        ("POST", "/api/restore") => handle_restore(stream, &headers, store, wp),
+        ("POST", "/api/publish") => handle_publish(stream, &mut reader, &headers, store, wp, cloudstore),
+        ("POST", "/api/restore") => handle_restore(stream, &headers, store, wp, cloudstore),
         ("POST", "/api/wordpress/sync") => handle_wp_sync(stream, &headers, store, wp),
         ("POST", "/api/wordpress") => handle_wp_save(stream, &mut reader, &headers, store, wp),
         ("GET" | "HEAD", p) if p.starts_with("/api/wordpress/") => {
             let slug = &p["/api/wordpress/".len()..];
             handle_wp_get(stream, &headers, store, wp, slug, head_only)
         }
+        ("POST", "/api/cloud/sync") => handle_cloud_sync(stream, &headers, store, cloudstore),
+        ("POST", "/api/cloud") => handle_cloud_save(stream, &mut reader, &headers, store, cloudstore),
+        ("GET" | "HEAD", p) if p.starts_with("/api/cloud/") => {
+            let slug = &p["/api/cloud/".len()..];
+            handle_cloud_get(stream, &headers, store, cloudstore, slug, head_only)
+        }
         // The MCP endpoint: POST is the whole transport; any other
         // method is answered inside, as a JSON 405 (see mcp.rs).
         ("POST", "/mcp" | "/mcp/") | ("GET" | "HEAD", "/mcp" | "/mcp/") => {
-            mcp::handle_mcp(stream, &mut reader, &method, &headers, store, work, wp)
+            mcp::handle_mcp(stream, &mut reader, &method, &headers, store, work, wp, cloudstore)
         }
         // Federation via edit.phext.io (see fed.rs): the browser
         // flow, the session's own endpoints, and the vault sync.
@@ -321,6 +332,7 @@ fn handle_publish(
     headers: &HashMap<String, String>,
     store: &Arc<Store>,
     wp: &Arc<WpStore>,
+    cloudstore: &Arc<CloudStore>,
 ) {
     let slug = headers.get("x-slug").cloned().unwrap_or_default();
     if !valid_slug(&slug) {
@@ -337,12 +349,14 @@ fn handle_publish(
     match store.publish(&slug, body, key, changed) {
         Ok(PublishOutcome::Created { bundle, edit_key }) => {
             let report = wordpress::sync_if_configured(wp, &bundle);
-            let body = publish_json(&bundle, Some(&edit_key), report.as_ref());
+            let cloud_report = cloud::sync_if_configured(cloudstore, &bundle);
+            let body = publish_json(&bundle, Some(&edit_key), report.as_ref(), cloud_report.as_ref());
             http::send_response(stream, 201, JSON, body.as_bytes(), CacheClass::NoStore, headers, false)
         }
         Ok(PublishOutcome::Replaced { bundle }) => {
             let report = wordpress::sync_if_configured(wp, &bundle);
-            let body = publish_json(&bundle, None, report.as_ref());
+            let cloud_report = cloud::sync_if_configured(cloudstore, &bundle);
+            let body = publish_json(&bundle, None, report.as_ref(), cloud_report.as_ref());
             http::send_response(stream, 200, JSON, body.as_bytes(), CacheClass::NoStore, headers, false)
         }
         Err(PublishError::Invalid(msg)) => json_error(stream, headers, 422, &msg),
@@ -362,6 +376,7 @@ fn handle_restore(
     headers: &HashMap<String, String>,
     store: &Arc<Store>,
     wp: &Arc<WpStore>,
+    cloudstore: &Arc<CloudStore>,
 ) {
     let slug = headers.get("x-slug").cloned().unwrap_or_default();
     if !valid_slug(&slug) {
@@ -371,7 +386,8 @@ fn handle_restore(
     match store.restore(&slug, key) {
         Ok(bundle) => {
             let report = wordpress::sync_if_configured(wp, &bundle);
-            let body = publish_json(&bundle, None, report.as_ref());
+            let cloud_report = cloud::sync_if_configured(cloudstore, &bundle);
+            let body = publish_json(&bundle, None, report.as_ref(), cloud_report.as_ref());
             http::send_response(stream, 200, JSON, body.as_bytes(), CacheClass::NoStore, headers, false)
         }
         Err(PublishError::WrongKey) => json_error(stream, headers, 403, "that edit key does not open this slug"),
@@ -388,6 +404,7 @@ fn publish_json(
     bundle: &store::Bundle,
     edit_key: Option<&str>,
     report: Option<&wordpress::SyncReport>,
+    cloud_report: Option<&cloud::CloudReport>,
 ) -> String {
     let files: Vec<String> = bundle
         .parsed
@@ -401,15 +418,19 @@ fn publish_json(
     let wp_field = report
         .map(|r| format!(",\"wordpress\":{}", r.to_json()))
         .unwrap_or_default();
+    let cloud_field = cloud_report
+        .map(|r| format!(",\"cloud\":{}", cloud::report_json(r)))
+        .unwrap_or_default();
     format!(
-        "{{\"ok\":true,\"slug\":\"{}\",\"version\":{},\"published_at\":{},\"url\":\"/b/{}/\",\"files\":[{}]{}{}}}",
+        "{{\"ok\":true,\"slug\":\"{}\",\"version\":{},\"published_at\":{},\"url\":\"/b/{}/\",\"files\":[{}]{}{}{}}}",
         http::json_escape(&bundle.slug),
         bundle.version,
         bundle.published_at,
         http::json_escape(&bundle.slug),
         files.join(","),
         key_field,
-        wp_field
+        wp_field,
+        cloud_field
     )
 }
 
@@ -602,6 +623,160 @@ fn handle_wp_sync(
     let report = wordpress::sync_bundle(wp, &bundle, &settings);
     let body = format!("{{\"ok\":true,\"wordpress\":{}}}", report.to_json());
     http::send_response(stream, 200, JSON, body.as_bytes(), CacheClass::NoStore, headers, false)
+}
+
+// ——— Cloud sync (S3 / Azure / GCS) ———
+
+/// The cloud gate, in the WordPress gate's shape: the bundle must
+/// exist (a connection attaches to a published bundle) and the key
+/// must open it.
+fn cloud_gate(
+    stream: &mut TcpStream,
+    headers: &HashMap<String, String>,
+    store: &Arc<Store>,
+    slug: &str,
+) -> Option<Arc<store::Bundle>> {
+    if store.get(slug).is_none() {
+        json_error(stream, headers, 404, "no such bundle — release it first, then connect cloud storage");
+        return None;
+    }
+    let key = headers.get("x-edit-key").map(|s| s.as_str());
+    match key_opens(store, slug, key) {
+        Some(b) => Some(b),
+        None => {
+            json_error(stream, headers, 403, "that edit key does not open this slug");
+            None
+        }
+    }
+}
+
+/// Save (or replace) the cloud connection. The body is the
+/// settings' own lines form (`key=value`); credential lines left
+/// blank keep what is saved. An empty identity line — the bucket
+/// for S3/GCS, the container for Azure — disconnects, the
+/// WordPress empty-site rule in this record's own terms.
+fn handle_cloud_save(
+    stream: &mut TcpStream,
+    reader: &mut BufReader<TcpStream>,
+    headers: &HashMap<String, String>,
+    store: &Arc<Store>,
+    cloudstore: &Arc<CloudStore>,
+) {
+    let slug = headers.get("x-slug").cloned().unwrap_or_default();
+    if !valid_slug(&slug) {
+        return json_error(stream, headers, 400, "invalid slug");
+    }
+    let body = match http::read_body(reader, headers, 16 * 1024) {
+        Some(b) => b,
+        None => return json_error(stream, headers, 413, "settings larger than the 16 KiB limit"),
+    };
+    if cloud_gate(stream, headers, store, &slug).is_none() {
+        return;
+    }
+    let text = String::from_utf8_lossy(&body);
+    // Disconnect: the active provider's identity line, present
+    // and empty. (A save body always carries its provider line;
+    // without one, the stored provider decides.)
+    let existing = cloudstore.load_settings(&slug);
+    let mut provider = existing.as_ref().map(|s| s.provider).unwrap_or_default();
+    let mut identity_empty = false;
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once('=') else { continue };
+        match k.trim() {
+            "provider" => {
+                if let Some(p) = cloud::Provider::parse(v) {
+                    provider = p;
+                }
+            }
+            "bucket" if v.trim().is_empty() && provider != cloud::Provider::Azure => {
+                identity_empty = true;
+            }
+            "container" if v.trim().is_empty() && provider == cloud::Provider::Azure => {
+                identity_empty = true;
+            }
+            _ => {}
+        }
+    }
+    if identity_empty {
+        return match cloudstore.clear(&slug) {
+            Ok(()) => http::send_response(
+                stream,
+                200,
+                JSON,
+                b"{\"ok\":true,\"configured\":false}",
+                CacheClass::NoStore,
+                headers,
+                false,
+            ),
+            Err(e) => json_error(stream, headers, 500, &e),
+        };
+    }
+    let settings = match cloud::merge_settings(existing.as_ref(), &text) {
+        Ok(s) => s,
+        Err(e) => return json_error(stream, headers, 422, &e),
+    };
+    if let Err(e) = cloudstore.save_settings(&slug, &settings) {
+        return json_error(stream, headers, 500, &e);
+    }
+    let body = cloud::settings_json(Some(&settings), &cloudstore.load_state(&slug));
+    http::send_response(stream, 200, JSON, body.as_bytes(), CacheClass::NoStore, headers, false)
+}
+
+fn handle_cloud_get(
+    stream: &mut TcpStream,
+    headers: &HashMap<String, String>,
+    store: &Arc<Store>,
+    cloudstore: &Arc<CloudStore>,
+    slug: &str,
+    head_only: bool,
+) {
+    if !valid_slug(slug) {
+        return json_error(stream, headers, 400, "invalid slug");
+    }
+    if cloud_gate(stream, headers, store, slug).is_none() {
+        return;
+    }
+    let body = cloud::settings_json(
+        cloudstore.load_settings(slug).as_ref(),
+        &cloudstore.load_state(slug),
+    );
+    http::send_response(stream, 200, JSON, body.as_bytes(), CacheClass::NoStore, headers, head_only)
+}
+
+/// The retry: sync the stored bundle to the stored connection,
+/// without re-publishing.
+fn handle_cloud_sync(
+    stream: &mut TcpStream,
+    headers: &HashMap<String, String>,
+    store: &Arc<Store>,
+    cloudstore: &Arc<CloudStore>,
+) {
+    let slug = headers.get("x-slug").cloned().unwrap_or_default();
+    if !valid_slug(&slug) {
+        return json_error(stream, headers, 400, "invalid slug");
+    }
+    let bundle = match cloud_gate(stream, headers, store, &slug) {
+        Some(b) => b,
+        None => return,
+    };
+    let settings = match cloudstore.load_settings(&slug) {
+        Some(s) => s,
+        None => {
+            return json_error(
+                stream,
+                headers,
+                422,
+                "cloud storage is not connected for this bundle",
+            )
+        }
+    };
+    match cloud::sync_bundle(cloudstore, &bundle, &settings) {
+        Ok(report) => {
+            let body = format!("{{\"ok\":true,\"cloud\":{}}}", cloud::report_json(&report));
+            http::send_response(stream, 200, JSON, body.as_bytes(), CacheClass::NoStore, headers, false)
+        }
+        Err(e) => json_error(stream, headers, 422, &e),
+    }
 }
 
 /// Everything under `/b/`: a bundle's public life.

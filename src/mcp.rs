@@ -46,6 +46,7 @@ use crate::bundle::{
     bundle_title, is_vault_path, valid_bundle_path, valid_slug, BundleFile,
 };
 use crate::http::{self, CacheClass};
+use crate::cloud::CloudStore;
 use crate::store::{clean_changed_line, Store};
 use crate::wordpress::WpStore;
 use crate::work::{diverged, WorkError, WorkStore, WorkingCopy};
@@ -67,6 +68,7 @@ pub fn handle_mcp(
     store: &Arc<Store>,
     work: &Arc<WorkStore>,
     wp: &Arc<WpStore>,
+    cloudstore: &Arc<CloudStore>,
 ) {
     // Stateless: there is no server-initiated stream for a GET to
     // open and no transport session for a DELETE to close. A
@@ -110,7 +112,7 @@ pub fn handle_mcp(
     if let Value::Array(items) = &value {
         let replies: Vec<Value> = items
             .iter()
-            .filter_map(|item| dispatch(store, work, wp, item, http_key))
+            .filter_map(|item| dispatch(store, work, wp, cloudstore, item, http_key))
             .collect();
         if replies.is_empty() {
             http::send_response(stream, 202, http::JSON, b"", CacheClass::NoStore, headers, false);
@@ -120,7 +122,7 @@ pub fn handle_mcp(
         }
         return;
     }
-    match dispatch(store, work, wp, &value, http_key) {
+    match dispatch(store, work, wp, cloudstore, &value, http_key) {
         Some(reply) => {
             let out = serde_json::to_string(&reply).unwrap_or_else(|_| "{}".into());
             send_json(stream, headers, 200, &out);
@@ -141,6 +143,7 @@ fn dispatch(
     store: &Arc<Store>,
     work: &Arc<WorkStore>,
     wp: &Arc<WpStore>,
+    cloudstore: &Arc<CloudStore>,
     req: &Value,
     http_key: Option<&str>,
 ) -> Option<Value> {
@@ -157,7 +160,7 @@ fn dispatch(
         "initialize" => Ok(initialize(&params)),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tools() })),
-        "tools/call" => Ok(call_tool(store, work, wp, &params, http_key)),
+        "tools/call" => Ok(call_tool(store, work, wp, cloudstore, &params, http_key)),
         _ => Err((-32601, format!("method not found: {method}"))),
     };
     Some(match outcome {
@@ -272,7 +275,7 @@ fn tools() -> Value {
         },
         {
             "name": "publish_bundle",
-            "description": "Commit the slug's working copy atomically — the same publish as the web release: version increments, the URL never changes, the previous version is kept for restore. Refuses when the published bundle has moved past the draft's base version. Requires the edit key. If the bundle is connected to a WordPress site, the release is pushed there too and the per-file sync report rides the result as a wordpress field.",
+            "description": "Commit the slug's working copy atomically — the same publish as the web release: version increments, the URL never changes, the previous version is kept for restore. Refuses when the published bundle has moved past the draft's base version. Requires the edit key. If the bundle is connected to a WordPress site, the release is pushed there too and the per-file sync report rides the result as a wordpress field. If it is connected to cloud storage (an S3 bucket, an Azure container, or a Google Cloud bucket), the release is copied there too and the report rides as a cloud field.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -290,6 +293,7 @@ fn call_tool(
     store: &Arc<Store>,
     work: &Arc<WorkStore>,
     wp: &Arc<WpStore>,
+    cloudstore: &Arc<CloudStore>,
     params: &Value,
     http_key: Option<&str>,
 ) -> Value {
@@ -304,7 +308,7 @@ fn call_tool(
     // A tool must answer, never panic: a refusal is an isError
     // result, and so is an internal failure.
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_tool(store, work, wp, name, &args, key)
+        run_tool(store, work, wp, cloudstore, name, &args, key)
     }));
     match ran {
         Ok(Ok(value)) => {
@@ -339,6 +343,7 @@ fn run_tool(
     store: &Arc<Store>,
     work: &Arc<WorkStore>,
     wp: &Arc<WpStore>,
+    cloudstore: &Arc<CloudStore>,
     name: &str,
     args: &Value,
     key: Option<&str>,
@@ -374,7 +379,7 @@ fn run_tool(
                 .get("changed")
                 .and_then(|v| v.as_str())
                 .and_then(clean_changed_line);
-            publish_bundle(work, store, wp, slug, changed, key)
+            publish_bundle(work, store, wp, cloudstore, slug, changed, key)
         }
         _ => Err(format!("unknown tool: {name}")),
     }
@@ -617,6 +622,7 @@ fn publish_bundle(
     work: &Arc<WorkStore>,
     store: &Arc<Store>,
     wp: &Arc<WpStore>,
+    cloudstore: &Arc<CloudStore>,
     slug: &str,
     changed: Option<String>,
     key: Option<&str>,
@@ -648,6 +654,14 @@ fn publish_bundle(
         if let Some(report) = crate::wordpress::sync_if_configured(wp, &bundle) {
             if let Ok(value) = serde_json::from_str::<Value>(&report.to_json()) {
                 out["wordpress"] = value;
+            }
+        }
+        // The cloud sync rides the same hook, in the same shape:
+        // a `cloud` field on the result, present only when a cloud
+        // connection (S3, Azure, or GCS) is configured.
+        if let Some(report) = crate::cloud::sync_if_configured(cloudstore, &bundle) {
+            if let Ok(value) = serde_json::from_str::<Value>(&crate::cloud::report_json(&report)) {
+                out["cloud"] = value;
             }
         }
     }

@@ -378,6 +378,72 @@ entirely (the editor is then exactly the local-first tool);
 `MDWIZ_PHEXT_ISSUER` points the flow at another issuer (a
 staging edit.phext.io) and defaults to `https://edit.phext.io`.
 
+## Cloud sync — S3, Azure, Google Cloud
+
+A bundle can also live in object storage its author owns — the
+"deploy on your own" route, made automatic. One engine serves
+three providers: **Amazon S3**, **Microsoft Azure Blob Storage**,
+and **Google Cloud Storage**. The connection is per bundle, held
+by whoever holds the bundle's edit key, and set from the release
+screen (or `POST /api/cloud` with the key): the provider, its
+bucket or container, an optional prefix, and its credential.
+
+On every publish, the bundle's deployable tree — the same tree
+the static-site download carries: the rendered pages, the PDFs,
+the raw sources at their paths, the feed, the bundle zip — is
+copied to the destination under the prefix, with the content
+types a static host serves (`text/html`, `application/pdf`,
+`text/markdown` for the sources, `application/rss+xml` for the
+feed). Unchanged files are skipped: the server keeps the SHA-256
+it last uploaded successfully for every path, beside the bundle,
+keyed to the destination — switching provider, bucket, container,
+or prefix starts the new destination unconfirmed. A file that
+leaves the bundle is not deleted from the destination; its copy
+stays.
+
+The bundle stays the source of truth: the sync runs after the
+local commit, and a provider failure never fails a publish. The
+per-file result (uploaded / unchanged / failed, with the
+provider's own error) is recorded with the bundle, returned with
+the publish result, and shown on the release screen, which offers
+a retry that re-syncs without re-publishing
+(`POST /api/cloud/sync`).
+
+The transports are each provider's own first door, over `ureq`,
+the tree's one HTTP client:
+
+- **S3** — PUT Object, path-style, signed with Signature Version
+  4 (implemented in `src/cloud.rs` over the `sha2` the service
+  already carries, proven against AWS's published signing test
+  vector). An optional endpoint field serves S3-compatible stores
+  with the same code path.
+- **Google Cloud Storage** — the XML API with HMAC keys, which is
+  deliberately S3-shaped: the same signer, the same path-style
+  PUT, credential scope region `auto`, against
+  storage.googleapis.com (or a set endpoint).
+- **Azure Blob** — PUT Blob against the Blob service REST API,
+  authorized with a Shared Key signature (HMAC-SHA256 over
+  Azure's canonical string-to-sign, the account key base64-decoded
+  first). With an endpoint set, addressing is path-style (the
+  Azurite shape); without one, the account's own host.
+
+Prerequisites, all on the owner's side:
+
+- A bucket (S3, GCS) or a storage account and container (Azure).
+- A credential that may write: an IAM key with `s3:PutObject` on
+  the prefix (S3), a Cloud Storage HMAC key for the bucket (GCS),
+  or the storage account's key (Azure). The sync only ever writes
+  objects.
+- If the destination should serve the site, website hosting
+  configured on it with the provider: nothing here sets or touches
+  its ACL, policy, or website configuration.
+
+The credentials are stored server-side only, in the bundle's own
+directory with owner-only permissions, and are never returned by
+any API (reads name a key ID by its last four characters and
+report only that a secret is set), never logged, and never part
+of the bundle, its download, or its feed.
+
 ## What was distilled
 
 This repo is a distillation of two of Will Bickford's, per his
@@ -446,8 +512,9 @@ bundles), `pulldown-cmark` (one renderer behind both faces and the
 published pages, so they can never diverge), `sha2` (edit keys,
 ETags), `serde_json` (the MCP endpoint's JSON-RPC — the same
 crate phext-lattice's MCP is built on), and `ureq` — the one HTTP
-client, for the WordPress push, which needs TLS; the server side
-stays std-only (phext-notepad's edit-sync runs the same client).
+client, for the WordPress push and the cloud sync, which need
+TLS; the server side stays std-only (phext-notepad's edit-sync
+runs the same client).
 The editor page is one self-contained HTML file; its zip
 reader/writer is hand-rolled (stored on write, stored + deflate on
 read) over the platform's own streams.

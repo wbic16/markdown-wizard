@@ -553,6 +553,12 @@ pub fn integrate_page() -> String {
          the raw markdown, and the feed — and put it on any static host: your bucket, \
          your server, a folder behind your own domain. The addresses are then yours \
          outright, and this site is only the desk you wrote it at.</p>\n\
+         <p>If the host is storage you own — an S3 bucket, an Azure Blob container, \
+         a Google Cloud bucket — the copying can be the tool's job: connect it in \
+         the bundle's cloud settings on the release screen, and each release syncs \
+         the same tree into it, under a prefix you choose. Files that leave the \
+         bundle stay in the destination; its website hosting remains yours to \
+         configure with the provider.</p>\n\
          <h2>Sign in with edit.phext.io</h2>\n\
          <p>Writing needs no account; drafts live in your browser. If you would rather \
          they travelled with you, sign in with <a href=\"https://edit.phext.io\">edit.phext.io</a> \

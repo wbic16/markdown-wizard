@@ -24,7 +24,17 @@ never handles a password itself.
    per published slug lives here (`bundle.zip`, `meta.txt`, `prev/`,
    and `site/` — the derived outputs: pre-rendered pages, PDFs, and
    the static-site download, rebuilt at every publish); nothing else
-   writes to it.
+   writes to it. Bundles with integrations connected keep their
+   connection files in the same directory — `wordpress.txt` /
+   `wp-sync.txt` for WordPress, `cloud.txt` / `cloud-state.txt`
+   for cloud sync (the settings files hold credentials and are
+   written mode 0600).
+
+   The cloud sync (S3 / Azure / GCS) needs **no new deploy step**:
+   no cloud CLI, no extra service, no open port. Its client is in
+   the binary (ureq + SigV4 / Shared Key signing, `src/cloud.rs`),
+   speaking to each owner's storage over the server's ordinary
+   outbound HTTPS.
 4. **Service** — installs `deploy/markdown-wizard.service`, enables
    and restarts it, and waits for `GET /api/status` on
    `127.0.0.1:8090` (phext-edit holds 8080, the preview 8081; 8090 is

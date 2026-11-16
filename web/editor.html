@@ -342,6 +342,26 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
 #wpResults .wp-path { font-family: var(--mono); font-size: 0.82rem; }
 #wpResults .wp-out { color: var(--soft); }
 #wpResults .wp-out.failed { color: var(--err); }
+#cloudSection { margin-top: 2.6rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+#cloudSection h2 { font-family: var(--serif); font-weight: 600; font-size: 1.3rem; margin: 0 0 0.3rem; }
+.cloud-note { color: var(--soft); font-size: 0.92rem; line-height: 1.5; margin: 0.5rem 0; }
+#cloudProvider {
+  width: 100%; box-sizing: border-box; background: var(--card); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 6px; padding: 0.5rem 0.6rem;
+  font-family: var(--serif); font-size: 1rem; margin: 0.2rem 0 0.4rem;
+}
+#cloudSave {
+  border: 1px solid var(--accent); color: var(--accent); border-radius: 6px;
+  padding: 0.45rem 1rem; font-family: var(--serif); font-size: 1rem; background: var(--card);
+}
+.cloud-actions { margin-top: 1rem; display: flex; gap: 1.2rem; align-items: center; }
+#cloudMsg { font-family: var(--serif); font-size: 1rem; margin-top: 0.9rem; }
+#cloudMsg.err { color: var(--err); }
+#cloudResults { list-style: none; margin: 0.6rem 0 0; padding: 0; font-size: 0.95rem; }
+#cloudResults li { padding: 0.32rem 0; border-bottom: 1px solid var(--line); display: flex; gap: 0.7rem; align-items: baseline; }
+#cloudResults .cloud-path { font-family: var(--mono); font-size: 0.82rem; }
+#cloudResults .cloud-out { color: var(--soft); }
+#cloudResults .cloud-out.failed { color: var(--err); }
 </style>
 </head>
 <body>
@@ -479,6 +499,55 @@ body.focused.peek #sidebar, body.focused.peek #chrome, body.focused.peek #status
       </div>
       <p id="wpMsg"></p>
       <ul id="wpResults"></ul>
+    </div>
+
+    <div id="cloudSection">
+      <h2>Cloud storage — your own bucket</h2>
+      <p class="cloud-note">Connect storage you own — an S3 bucket, an Azure Blob container, or a Google Cloud bucket — and every release is copied there too: the bundle's whole site, its pages, its PDFs, its sources, its feed. Files taken out of the bundle are not removed from the destination, and the destination's website hosting is yours to set up with the provider; this site only writes the files.</p>
+      <p class="field-label">Provider</p>
+      <select id="cloudProvider">
+        <option value="s3">Amazon S3</option>
+        <option value="azure">Microsoft Azure Blob Storage</option>
+        <option value="gcs">Google Cloud Storage</option>
+      </select>
+      <div id="cloudFieldsS3">
+        <p class="field-label">Bucket</p>
+        <input type="text" id="cloudBucketS3" placeholder="e.g. my-site-bucket" spellcheck="false" autocomplete="off">
+        <p class="field-label">Region</p>
+        <input type="text" id="cloudRegion" placeholder="e.g. us-east-1" spellcheck="false" autocomplete="off">
+        <p class="field-label">Access key ID</p>
+        <input type="text" id="cloudKeyIdS3" placeholder="An IAM key that may PutObject in the bucket" spellcheck="false" autocomplete="off">
+        <p class="field-label">Secret access key</p>
+        <input type="password" id="cloudSecretS3" placeholder="Its secret" autocomplete="off">
+      </div>
+      <div id="cloudFieldsAzure" style="display:none">
+        <p class="field-label">Storage account</p>
+        <input type="text" id="cloudAccount" placeholder="e.g. mysitestore" spellcheck="false" autocomplete="off">
+        <p class="field-label">Container</p>
+        <input type="text" id="cloudContainer" placeholder="e.g. site" spellcheck="false" autocomplete="off">
+        <p class="field-label">Account key</p>
+        <input type="password" id="cloudAccountKey" placeholder="The account's key (base64)" autocomplete="off">
+      </div>
+      <div id="cloudFieldsGcs" style="display:none">
+        <p class="field-label">Bucket</p>
+        <input type="text" id="cloudBucketGcs" placeholder="e.g. my-site-bucket" spellcheck="false" autocomplete="off">
+        <p class="field-label">HMAC access key</p>
+        <input type="text" id="cloudKeyIdGcs" placeholder="A Cloud Storage HMAC key for the bucket" spellcheck="false" autocomplete="off">
+        <p class="field-label">HMAC secret</p>
+        <input type="password" id="cloudSecretGcs" placeholder="Its secret" autocomplete="off">
+      </div>
+      <p class="field-label">Prefix <span style="text-transform:none;letter-spacing:0">(optional — a folder inside the destination)</span></p>
+      <input type="text" id="cloudPrefix" placeholder="e.g. site" spellcheck="false" autocomplete="off">
+      <p class="field-label">Endpoint <span style="text-transform:none;letter-spacing:0">(optional — only for compatible or local storage)</span></p>
+      <input type="text" id="cloudEndpoint" placeholder="The provider's own, unless you say otherwise" spellcheck="false" autocomplete="off">
+      <p class="cloud-note">The credentials are kept on this server only and are never shown again.</p>
+      <div class="cloud-actions">
+        <button id="cloudSave">Save the connection</button>
+        <button class="quiet-action" id="cloudSyncBtn" style="display:none;text-decoration:underline">Sync now</button>
+        <button class="quiet-action" id="cloudDisconnect" style="display:none;text-decoration:underline">Disconnect</button>
+      </div>
+      <p id="cloudMsg"></p>
+      <ul id="cloudResults"></ul>
     </div>
   </div>
 </section>
@@ -1381,6 +1450,7 @@ function refreshRelease() {
   slugMeta = null;
   if (!slug) return;
   loadWp();
+  loadCloud();
   if (S.keys[slug]) keyInput.value = S.keys[slug];
   fetch(`/api/bundles/${encodeURIComponent(slug)}`)
     .then(r => (r.ok ? r.json() : null))
@@ -1451,6 +1521,10 @@ releaseGo.addEventListener("click", async () => {
     if (data.wordpress) {
       document.getElementById("liveMeta").textContent += ` ${wpSummary(data.wordpress)}`;
       renderWpReport(data.wordpress);
+    }
+    if (data.cloud) {
+      document.getElementById("liveMeta").textContent += ` ${cloudSummary(data.cloud)}`;
+      renderCloudReport(data.cloud);
     }
     refreshRelease();
   } catch (err) {
@@ -2049,6 +2123,216 @@ async function offerVaultAfterSignIn() {
   if (!FED.signedIn) return;
   openVaultScreen();
 }
+
+/* ════════════════ Cloud storage ════════════════
+   One connection per bundle, held by the server under the
+   bundle's edit key, with a provider's face: Amazon S3, Azure
+   Blob, or Google Cloud Storage. This browser only ever sends a
+   credential once, at save time, and never sees it again — a key
+   ID comes back as its last four characters only, a secret not at
+   all. The sync result — per file: uploaded, unchanged, or failed
+   with the provider's own words — arrives with the publish result
+   and is also kept server-side, so reopening this screen shows
+   the last run. */
+const cloudProvider = document.getElementById("cloudProvider");
+const cloudPrefix = document.getElementById("cloudPrefix");
+const cloudEndpoint = document.getElementById("cloudEndpoint");
+const cloudMsg = document.getElementById("cloudMsg");
+const cloudResults = document.getElementById("cloudResults");
+const cloudSave = document.getElementById("cloudSave");
+const cloudSyncBtn = document.getElementById("cloudSyncBtn");
+const cloudDisconnect = document.getElementById("cloudDisconnect");
+const CLOUD_FIELDS = {
+  s3: document.getElementById("cloudFieldsS3"),
+  azure: document.getElementById("cloudFieldsAzure"),
+  gcs: document.getElementById("cloudFieldsGcs"),
+};
+const CLOUD_NAMES = { s3: "S3", azure: "Azure", gcs: "Google Cloud" };
+const cloudEl = id => document.getElementById(id);
+
+function cloudShowProvider() {
+  for (const [p, el] of Object.entries(CLOUD_FIELDS)) {
+    el.style.display = p === cloudProvider.value ? "" : "none";
+  }
+}
+cloudProvider.addEventListener("change", cloudShowProvider);
+
+function cloudKey() {
+  const slug = slugInput.value.trim().toLowerCase();
+  return { slug, key: S.keys[slug] || keyInput.value.trim() || null };
+}
+function cloudSummary(report) {
+  if (!report) return "";
+  const name = CLOUD_NAMES[report.provider] || "Cloud";
+  const parts = [];
+  if (report.uploaded) parts.push(`${report.uploaded} uploaded`);
+  if (report.skipped) parts.push(`${report.skipped} unchanged`);
+  if (report.failed) parts.push(`${report.failed} failed`);
+  return parts.length ? `${name}: ${parts.join(", ")}.` : `${name}: nothing to send.`;
+}
+function renderCloudReport(report) {
+  cloudResults.innerHTML = "";
+  if (!report) return;
+  for (const f of report.failures || []) {
+    const li = document.createElement("li");
+    const p = document.createElement("span");
+    p.className = "cloud-path";
+    p.textContent = f.path;
+    const o = document.createElement("span");
+    o.className = "cloud-out failed";
+    o.textContent = `failed — ${f.error || ""}`;
+    li.append(p, o);
+    cloudResults.append(li);
+  }
+  // The sync button is the retry when a file failed.
+  cloudSyncBtn.textContent = report.failed
+    ? `Retry ${CLOUD_NAMES[report.provider] || "cloud"} sync`
+    : "Sync now";
+}
+async function loadCloud() {
+  const { slug, key } = cloudKey();
+  cloudSyncBtn.style.display = "none";
+  cloudDisconnect.style.display = "none";
+  cloudMsg.className = "";
+  cloudMsg.textContent = "";
+  cloudResults.innerHTML = "";
+  if (!slug || !key) return;
+  try {
+    const r = await fetch(`/api/cloud/${encodeURIComponent(slug)}`, {
+      headers: { "X-Edit-Key": key },
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.configured) return;
+    cloudProvider.value = data.provider || "s3";
+    cloudShowProvider();
+    cloudPrefix.value = (data.prefix || "").replace(/\/$/, "");
+    cloudEndpoint.value = data.endpoint || "";
+    if (data.provider === "azure") {
+      cloudEl("cloudAccount").value = data.account || "";
+      cloudEl("cloudContainer").value = data.container || "";
+      const k = cloudEl("cloudAccountKey");
+      k.value = "";
+      k.placeholder = "Saved on the server — leave empty to keep it";
+    } else {
+      const bucket = data.provider === "gcs" ? cloudEl("cloudBucketGcs") : cloudEl("cloudBucketS3");
+      bucket.value = data.bucket || "";
+      if (data.provider === "s3") cloudEl("cloudRegion").value = data.region || "";
+      const kid = data.provider === "gcs" ? cloudEl("cloudKeyIdGcs") : cloudEl("cloudKeyIdS3");
+      kid.value = "";
+      kid.placeholder = `Saved on the server (…${data.access_key_id_last4}) — leave empty to keep it`;
+      const sec = data.provider === "gcs" ? cloudEl("cloudSecretGcs") : cloudEl("cloudSecretS3");
+      sec.value = "";
+      sec.placeholder = "Saved on the server — leave empty to keep it";
+    }
+    cloudSyncBtn.style.display = "";
+    cloudDisconnect.style.display = "";
+    if (data.last_sync) {
+      cloudMsg.textContent =
+        `Last synced ${new Date(data.last_sync.at * 1000).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}. ` +
+        cloudSummary(data.last_sync);
+      renderCloudReport(data.last_sync);
+    }
+  } catch (e) {}
+}
+function cloudBody() {
+  const p = cloudProvider.value;
+  const lines = [["provider", p]];
+  if (p === "s3") {
+    lines.push(
+      ["bucket", cloudEl("cloudBucketS3").value.trim()],
+      ["region", cloudEl("cloudRegion").value.trim()],
+      ["access_key_id", cloudEl("cloudKeyIdS3").value.trim()],
+      ["secret_access_key", cloudEl("cloudSecretS3").value],
+    );
+  } else if (p === "gcs") {
+    lines.push(
+      ["bucket", cloudEl("cloudBucketGcs").value.trim()],
+      ["access_key_id", cloudEl("cloudKeyIdGcs").value.trim()],
+      ["secret_access_key", cloudEl("cloudSecretGcs").value],
+    );
+  } else {
+    lines.push(
+      ["account", cloudEl("cloudAccount").value.trim()],
+      ["container", cloudEl("cloudContainer").value.trim()],
+      ["account_key", cloudEl("cloudAccountKey").value],
+    );
+  }
+  lines.push(
+    ["prefix", cloudPrefix.value.trim()],
+    ["endpoint", cloudEndpoint.value.trim()],
+  );
+  return lines.map(([k, v]) => `${k}=${v}`).join("\n") + "\n";
+}
+cloudSave.addEventListener("click", async () => {
+  const { slug, key } = cloudKey();
+  cloudMsg.className = "";
+  if (!slug || !key) {
+    cloudMsg.className = "err";
+    cloudMsg.textContent = "Release this bundle once first — the connection attaches to the published bundle, under its edit key.";
+    return;
+  }
+  cloudMsg.textContent = "Saving…";
+  try {
+    const r = await fetch("/api/cloud", {
+      method: "POST",
+      headers: { "X-Slug": slug, "X-Edit-Key": key, "Content-Type": "text/plain" },
+      body: cloudBody(),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `the server answered ${r.status}`);
+    cloudSyncBtn.style.display = "";
+    cloudDisconnect.style.display = "";
+    cloudMsg.textContent = "Connected. The next release will also copy the bundle there — or sync the current one now.";
+    loadCloud();
+  } catch (err) {
+    cloudMsg.className = "err";
+    cloudMsg.textContent = err.message;
+  }
+});
+cloudSyncBtn.addEventListener("click", async () => {
+  const { slug, key } = cloudKey();
+  if (!slug || !key) return;
+  cloudMsg.className = "";
+  cloudMsg.textContent = "Syncing…";
+  try {
+    const r = await fetch("/api/cloud/sync", {
+      method: "POST",
+      headers: { "X-Slug": slug, "X-Edit-Key": key },
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `the server answered ${r.status}`);
+    cloudMsg.textContent = cloudSummary(data.cloud);
+    renderCloudReport(data.cloud);
+  } catch (err) {
+    cloudMsg.className = "err";
+    cloudMsg.textContent = err.message;
+  }
+});
+cloudDisconnect.addEventListener("click", async () => {
+  const { slug, key } = cloudKey();
+  if (!slug || !key) return;
+  cloudMsg.className = "";
+  const p = cloudProvider.value;
+  const identity = p === "azure" ? "container" : "bucket";
+  try {
+    const r = await fetch("/api/cloud", {
+      method: "POST",
+      headers: { "X-Slug": slug, "X-Edit-Key": key, "Content-Type": "text/plain" },
+      body: `provider=${p}
+${identity}=
+`,
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `the server answered ${r.status}`);
+    cloudSyncBtn.style.display = "none";
+    cloudDisconnect.style.display = "none";
+    cloudResults.innerHTML = "";
+    cloudMsg.textContent = "Disconnected. The destination keeps everything it has.";
+  } catch (err) {
+    cloudMsg.className = "err";
+    cloudMsg.textContent = err.message;
+  }
+});
 
 /* ════════════════ boot: a file already open ════════════════ */
 function boot() {
