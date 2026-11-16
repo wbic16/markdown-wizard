@@ -89,9 +89,55 @@ grep -q "secret" "$WORK/index.html" && fail "index lists the vault"
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/b/e2e-bundle/vault/secret-note.md")" = "404" ] \
   || fail "the vault is served"
 curl -sf "$BASE/b/e2e-bundle/feed.xml" > "$WORK/feed.xml"
-grep -q '<rss version="2.0">' "$WORK/feed.xml" || fail "feed is not RSS 2.0"
+grep -q '<rss version="2.0"' "$WORK/feed.xml" || fail "feed is not RSS 2.0"
 grep -q "First release" "$WORK/feed.xml" || fail "feed lacks the change line"
 grep -q "secret" "$WORK/feed.xml" && fail "feed lists the vault"
+curl -sf "$BASE/rss.xml" > "$WORK/site-feed.xml"
+python3 - "$WORK/feed.xml" "$WORK/site-feed.xml" <<'PYEOF' || fail "the feeds do not validate as enriched XML"
+import sys, xml.etree.ElementTree as ET
+
+def local(tag):
+    return tag.rsplit("}", 1)[-1]
+
+def child(item, name):
+    for c in item:
+        if local(c.tag) == name:
+            return c
+    return None
+
+tree = ET.parse(sys.argv[1])
+root = tree.getroot()
+assert root.tag == "rss", root.tag
+assert root.get("version") == "2.0"
+items = list(root.iter("item"))
+assert items, "the bundle feed has no items"
+one = None
+for it in items:
+    link = child(it, "link")
+    if link is not None and link.text and link.text.endswith("/essays/one"):
+        one = it
+assert one is not None, "no item for essays/one"
+src = child(one, "markdown")
+assert src is not None, "the item lacks source:markdown"
+assert (src.text or "") == "# One\n\nFirst version.\n", f"source:markdown is not the file byte for byte: {src.text!r}"
+content = child(one, "encoded")
+assert content is not None and "First version." in (content.text or ""), "content:encoded lacks the full text"
+guid = child(one, "guid")
+assert guid is not None and guid.text and guid.text.endswith("/b/e2e-bundle/essays/one"), "the GUID is not the item's path address"
+for it in items:
+    link = child(it, "link")
+    assert link is not None and link.text and "://" in link.text, "an item link is not absolute"
+    assert child(it, "pubDate") is not None, "an item lacks a pubDate"
+
+site = ET.parse(sys.argv[2]).getroot()
+assert site.tag == "rss", site.tag
+site_items = list(site.iter("item"))
+assert site_items, "the site-wide feed has no items"
+assert any((child(it, "link").text or "").endswith("/b/e2e-bundle/essays/one") for it in site_items), "the site-wide feed lacks the bundle's items"
+assert all("secret" not in (child(it, "link").text or "") for it in site_items), "the site-wide feed names the vault"
+print("feeds validate: XML parses, source:markdown byte-exact, content full, GUIDs are addresses")
+PYEOF
+note "feeds parse as XML: full content, byte-exact source:markdown, path GUIDs, site-wide merge"
 curl -sf "$BASE/b/e2e-bundle.zip" > "$WORK/dl.zip"
 cmp "$WORK/bundle-v1.zip" "$WORK/dl.zip" || fail "downloaded bundle differs from the published zip"
 note "index, reading view, feed, vault privacy, download: all as designed"

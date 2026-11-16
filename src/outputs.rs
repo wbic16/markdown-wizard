@@ -204,7 +204,7 @@ fn build_tree(staging: &Path, bundle: &Bundle) -> Result<(), String> {
         let stem = markdown_stem(&f.path).unwrap_or_else(|| f.path.clone());
         let html_rel = format!("{stem}.html");
         let pdf_rel = format!("{stem}.pdf");
-        let page = render::reading_page(bundle, f);
+        let page = render::reading_page(bundle, f, CANONICAL_BASE);
         let page = rewrite_page(&page, bundle, &parent_dir(&stem), &html_rel);
         if html_rel != "index.html" && !files.contains(html_rel.as_str()) {
             write_file(&staging.join(&html_rel), page.as_bytes())?;

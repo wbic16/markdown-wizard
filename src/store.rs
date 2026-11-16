@@ -435,6 +435,11 @@ impl Store {
         if let Err(e) = crate::outputs::generate(&self.dir, bundle) {
             eprintln!("markdown-wizard: outputs for {slug} failed: {e}");
         }
+
+        // The WebSub announcement follows the commit the same
+        // way: fire-and-forget on its own thread, and a no-op
+        // unless a hub is configured (see rss.rs).
+        crate::rss::ping_hub(bundle);
         Ok(())
     }
 

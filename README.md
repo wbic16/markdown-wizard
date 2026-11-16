@@ -88,6 +88,17 @@ public URL rendered large *before* you commit, an optional one-line
   re-releasing a bundle for one file's sake does not re-date the
   rest. A file's first-published date is kept; its last-changed
   advances only when its content does.
+- A feed item is a whole document, not a pointer: the full
+  rendering in `content:encoded` (addresses absolutized), the
+  complete markdown source in `source:markdown` — Winer's
+  extension, so a post can be re-edited as markdown downstream —
+  and a short plain excerpt as its description. Items are newest
+  first, capped at 25 in a bundle's feed and 50 in the site-wide
+  feed at `/rss.xml`; GUIDs are the items' own addresses, never
+  their titles. Every published page carries the bundle feed's
+  autodiscovery link, the feeds answer conditional GETs (a quiet
+  poll costs a 304), and with `MDWIZ_WEBSUB_HUB` set, each
+  publish also pings the hub.
 - The previous version is kept. Restoring it is the same operation
   run with the old bytes, so a restore is itself reversible —
   reversibility replaces confirmation dialogs.
@@ -109,6 +120,7 @@ public URL rendered large *before* you commit, an optional one-line
 | `/b/<slug>.zip` | The bundle itself, to take away |
 | `/b/<slug>/site.zip` | The bundle as a ready-made static site, to host anywhere |
 | `/b/<slug>/feed.xml` | The bundle's RSS 2.0 feed, from the published snapshot only |
+| `/rss.xml` | The site-wide feed: every published bundle's items, newest first |
 | `/b/<slug>/vault/…` | Never served. The vault is private by structure |
 | `POST /mcp` | The MCP endpoint for agent clients (next section) |
 

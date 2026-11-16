@@ -102,6 +102,15 @@ Federation is on by default and needs no deploy step:
   403, and the editor surfaces that answer rather than hiding
   it.
 
+## WebSub (optional)
+
+Set `MDWIZ_WEBSUB_HUB` to a WebSub hub's address and the feeds
+carry the hub link; every publish then pings the hub for the
+bundle's feed and the site-wide feed, so subscribers hear about
+a release in real time instead of on a poll cycle. Unset (the
+default), no hub link is emitted and nothing is pinged. A dead
+or slow hub costs a log line, never a publish.
+
 ## Roll back
 
 ```

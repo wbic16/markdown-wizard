@@ -226,6 +226,16 @@ fn handle(
         ("GET" | "HEAD", "/robots.txt") => {
             http::send_response(stream, 200, TEXT, ROBOTS_TXT.as_bytes(), CacheClass::Static, &headers, head_only)
         }
+        ("GET" | "HEAD", "/rss.xml") => {
+            // The site-wide feed: every published bundle's items,
+            // newest first (see rss.rs). A live-instance surface
+            // only — the static download carries one bundle's own
+            // feed, never this aggregate.
+            let bundles = store.list();
+            let refs: Vec<&store::Bundle> = bundles.iter().map(|b| b.as_ref()).collect();
+            let feed = rss::site_feed_xml(&refs, &public_base(&headers));
+            http::send_response(stream, 200, "application/rss+xml; charset=utf-8", feed.as_bytes(), CacheClass::Shell, &headers, head_only);
+        }
         ("GET" | "HEAD", "/api/status") => {
             let body = format!(
                 "{{\"ok\":true,\"version\":\"{}\",\"bundles\":{}}}",
@@ -897,7 +907,7 @@ fn handle_bundle_path(
             // The cached page is missing (its generation failed,
             // and was logged): the reading view, rendered now, is
             // the same page — serve it rather than nothing.
-            let page = render::reading_page(&bundle, f);
+            let page = render::reading_page(&bundle, f, &base);
             http::send_response(stream, 200, HTML, page.as_bytes(), CacheClass::Shell, headers, head_only);
             return;
         }
@@ -929,7 +939,7 @@ fn handle_bundle_path(
     for ext in [".md", ".markdown"] {
         let candidate = format!("{sub}{ext}");
         if let Some(f) = bundle.parsed.file(&candidate) {
-            let page = render::reading_page(&bundle, f);
+            let page = render::reading_page(&bundle, f, &base);
             http::send_response(stream, 200, HTML, page.as_bytes(), CacheClass::Shell, headers, head_only);
             return;
         }

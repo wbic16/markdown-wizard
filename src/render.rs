@@ -342,11 +342,28 @@ pub fn version_line(bundle: &Bundle) -> String {
 }
 
 fn shell(title: &str, body: &str) -> String {
+    shell_with_feed(title, body, None)
+}
+
+/// The shell, with a feed to discover: a bundle's published pages
+/// — its index and every reading view — carry the autodiscovery
+/// link naming the bundle's feed, so a reader or aggregator that
+/// meets any page of the bundle finds the feed on the page
+/// itself. (A feed nobody can find is a feature nobody has.)
+fn shell_with_feed(title: &str, body: &str, feed: Option<(&str, &str)>) -> String {
+    let discovery = match feed {
+        Some((href, feed_title)) => format!(
+            "<link rel=\"alternate\" type=\"application/rss+xml\" title=\"{}\" href=\"{}\">\n",
+            html_escape(feed_title),
+            html_escape(href)
+        ),
+        None => String::new(),
+    };
     format!(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <title>{}</title>\n<link rel=\"icon\" type=\"image/png\" href=\"/favicon.png\">\n\
-         <script>{THEME_SNIPPET}</script>\n\
+         {discovery}<script>{THEME_SNIPPET}</script>\n\
          <style>{SITE_CSS}</style>\n</head>\n<body>\n<div class=\"page\">\n{body}\n</div>\n</body>\n</html>\n",
         html_escape(title)
     )
@@ -422,12 +439,13 @@ pub fn index_page(bundle: &Bundle, base: &str) -> String {
         html_escape(&title),
         version_line(bundle),
     );
-    shell(&title, &body)
+    let feed_href = format!("{base}/b/{}/feed.xml", bundle.slug);
+    shell_with_feed(&title, &body, Some((&feed_href, &title)))
 }
 
 /// One file's reading view: `/b/<slug>/<path>` (extension dropped).
 /// A printed page: title, rule, body, neighbours, colophon.
-pub fn reading_page(bundle: &Bundle, file: &BundleFile) -> String {
+pub fn reading_page(bundle: &Bundle, file: &BundleFile, base: &str) -> String {
     let md = file.text().unwrap_or("");
     let rendered = strip_leading_h1(&render_markdown(md));
     let title = first_heading(md)
@@ -488,7 +506,9 @@ pub fn reading_page(bundle: &Bundle, file: &BundleFile) -> String {
         version_line(bundle),
         html_escape(&stem),
     );
-    shell(&title, &body)
+    let feed_href = format!("{base}/b/{}/feed.xml", bundle.slug);
+    let feed_title = bundle_title(&bundle.parsed, &bundle.slug);
+    shell_with_feed(&title, &body, Some((&feed_href, &feed_title)))
 }
 
 /// The MCP client configuration, exactly as the MCP build's

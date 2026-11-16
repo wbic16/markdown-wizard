@@ -248,7 +248,7 @@ fn publish_serve_republish_restore_cycle() {
     let feed = get(srv.port, "/b/test-bundle/feed.xml");
     assert_eq!(feed.status, 200);
     let feed_text = String::from_utf8_lossy(&feed.body).into_owned();
-    assert!(feed_text.contains("<rss version=\"2.0\">"), "{feed_text}");
+    assert!(feed_text.contains("<rss version=\"2.0\""), "{feed_text}");
     assert!(feed_text.contains("/b/test-bundle/essays/one"), "{feed_text}");
     assert!(!feed_text.contains("secret"), "{feed_text}");
 
@@ -581,4 +581,332 @@ fn integrate_page_is_served_linked_and_kept_by_the_mascot() {
         String::from_utf8_lossy(&index.body).contains("href=\"/integrate\""),
         "bundle index does not link the integrate page"
     );
+}
+
+/// One response header's value, by case-insensitive name.
+fn header_value(headers: &str, name: &str) -> Option<String> {
+    headers.lines().find_map(|line| {
+        let (k, v) = line.split_once(':')?;
+        if k.trim().eq_ignore_ascii_case(name) {
+            Some(v.trim().to_string())
+        } else {
+            None
+        }
+    })
+}
+
+/// The text between two markers of a feed or item block.
+fn element(text: &str, open: &str, close: &str) -> String {
+    let start = text
+        .find(open)
+        .unwrap_or_else(|| panic!("{open} missing in: {text}"))
+        + open.len();
+    let end = text[start..]
+        .find(close)
+        .unwrap_or_else(|| panic!("{close} missing in: {text}"))
+        + start;
+    text[start..end].to_string()
+}
+
+/// The `<item>` block whose link ends with the given tail.
+fn item_block(feed: &str, link_tail: &str) -> String {
+    for chunk in feed.split("<item>").skip(1) {
+        let end = chunk.find("</item>").expect("item closes");
+        let block = &chunk[..end];
+        if block.contains(link_tail) {
+            return block.to_string();
+        }
+    }
+    panic!("no item for {link_tail} in: {feed}");
+}
+
+/// Reverse `xml_escape` — what a feed reader's parser hands back.
+fn xml_unescape(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+/// The escaping discipline, checked mechanically: every `&` in
+/// the document opens one of the five entities.
+fn assert_no_bare_ampersands(feed: &str) {
+    for (i, b) in feed.bytes().enumerate() {
+        if b == b'&' {
+            let rest = &feed[i..];
+            assert!(
+                ["&amp;", "&lt;", "&gt;", "&quot;", "&apos;"]
+                    .iter()
+                    .any(|e| rest.starts_with(e)),
+                "bare & at byte {i} in: {feed}"
+            );
+        }
+    }
+}
+
+/// The enriched feeds, end to end against the real server: an
+/// item carries the whole rendering and the byte-exact source,
+/// its GUID survives a retitle, the vault is absent from both
+/// feeds, both feeds answer conditional GETs, the published
+/// pages carry autodiscovery, and the site-wide feed merges
+/// every bundle newest first.
+#[test]
+fn feeds_are_full_cacheable_and_merged() {
+    let srv = start_server();
+    let one_md = "# One\n\nFirst paragraph, with AT&T and <angle> brackets.\n\nSee [two](two.md) and ![pic](pic.png).\n\nA middle paragraph that pads the post out to a length where a short description must stop long before the end of the text.\n\nAnother middle paragraph, because one was not quite enough padding to pass two hundred characters of prose.\n\nThe final paragraph, which an excerpt would drop.\n";
+    let zip1 = make_zip(&[
+        ("index.md", "# Home\n\nThe feed test bundle.\n"),
+        ("essays/one.md", one_md),
+        ("essays/two.md", "# Two\n\nThe second file.\n"),
+        ("essays/pic.png", "fakepng"),
+        ("vault/secret.md", "# Hidden\n\nNever fed.\n"),
+    ]);
+    let r = publish(srv.port, "feed-one", &zip1, None, Some("First release"));
+    assert_eq!(r.status, 201, "first publish: {}", String::from_utf8_lossy(&r.body));
+    let key = json_str(&r.body, "edit_key").expect("first publish returns the key");
+
+    let feed = get(srv.port, "/b/feed-one/feed.xml");
+    assert_eq!(feed.status, 200);
+    let etag = header_value(&feed.headers, "etag").expect("the feed carries an ETag");
+    let text = String::from_utf8_lossy(&feed.body).into_owned();
+    assert_no_bare_ampersands(&text);
+    assert!(
+        text.contains("xmlns:source=\"http://source.scripting.com/\""),
+        "{text}"
+    );
+    // The item for essays/one: source byte-exact, content whole,
+    // addresses absolute.
+    let item = item_block(&text, "/b/feed-one/essays/one");
+    let source = xml_unescape(&element(&item, "<source:markdown>", "</source:markdown>"));
+    assert_eq!(source, one_md, "source:markdown must be the file, byte for byte");
+    let content = xml_unescape(&element(&item, "<content:encoded>", "</content:encoded>"));
+    assert!(content.contains("The final paragraph"), "{content}");
+    assert!(
+        content.contains(&format!(
+            "href=\"http://127.0.0.1:{}/b/feed-one/essays/two\"",
+            srv.port
+        )),
+        "{content}"
+    );
+    assert!(
+        content.contains(&format!(
+            "src=\"http://127.0.0.1:{}/b/feed-one/essays/pic.png\"",
+            srv.port
+        )),
+        "{content}"
+    );
+    let guid_v1 = element(&item, "<guid isPermaLink=\"true\">", "</guid>");
+    assert_eq!(
+        guid_v1,
+        format!("http://127.0.0.1:{}/b/feed-one/essays/one", srv.port)
+    );
+    // The vault is not fed — not its path, not its words.
+    assert!(!text.contains("secret"), "{text}");
+    assert!(!text.contains("Never fed."), "{text}");
+
+    // Autodiscovery rides the published pages: index and reading
+    // view alike name the bundle's feed.
+    let index = get(srv.port, "/b/feed-one/");
+    let index_text = String::from_utf8_lossy(&index.body).into_owned();
+    assert!(
+        index_text.contains("<link rel=\"alternate\" type=\"application/rss+xml\""),
+        "{index_text}"
+    );
+    assert!(index_text.contains("/b/feed-one/feed.xml"), "{index_text}");
+    let view = get(srv.port, "/b/feed-one/essays/one");
+    let view_text = String::from_utf8_lossy(&view.body).into_owned();
+    assert!(
+        view_text.contains("<link rel=\"alternate\" type=\"application/rss+xml\""),
+        "{view_text}"
+    );
+
+    // A conditional GET on an unchanged feed is a 304.
+    let cond = request(
+        srv.port,
+        "GET",
+        "/b/feed-one/feed.xml",
+        &[("If-None-Match", etag.clone())],
+        &[],
+    );
+    assert_eq!(cond.status, 304, "an unchanged feed must revalidate: {}", cond.headers);
+    assert!(cond.body.is_empty());
+
+    // A retitle changes the item's title, never its GUID — and
+    // the changed feed no longer answers the old ETag.
+    std::thread::sleep(Duration::from_millis(1200));
+    let renamed = one_md.replacen("# One", "# One, Renamed", 1);
+    let zip2 = make_zip(&[
+        ("index.md", "# Home\n\nThe feed test bundle.\n"),
+        ("essays/one.md", renamed.as_str()),
+        ("essays/two.md", "# Two\n\nThe second file.\n"),
+        ("essays/pic.png", "fakepng"),
+        ("vault/secret.md", "# Hidden\n\nNever fed.\n"),
+    ]);
+    let r2 = publish(srv.port, "feed-one", &zip2, Some(&key), None);
+    assert_eq!(r2.status, 200, "re-publish: {}", String::from_utf8_lossy(&r2.body));
+    let feed2 = get(srv.port, "/b/feed-one/feed.xml");
+    let text2 = String::from_utf8_lossy(&feed2.body).into_owned();
+    let item2 = item_block(&text2, "/b/feed-one/essays/one");
+    assert_eq!(element(&item2, "<guid isPermaLink=\"true\">", "</guid>"), guid_v1);
+    assert!(item2.contains("<title>One, Renamed</title>"), "{item2}");
+    let stale = request(
+        srv.port,
+        "GET",
+        "/b/feed-one/feed.xml",
+        &[("If-None-Match", etag)],
+        &[],
+    );
+    assert_eq!(stale.status, 200, "a stale ETag must not 304 a changed feed");
+
+    // The site-wide feed: a second bundle, published later,
+    // leads it; both bundles' items are present; the vault is
+    // absent; it revalidates like the bundle feed.
+    std::thread::sleep(Duration::from_millis(1200));
+    let zip3 = make_zip(&[("index.md", "# Later\n\nThe newest bundle.\n")]);
+    let r3 = publish(srv.port, "feed-two", &zip3, None, None);
+    assert_eq!(r3.status, 201);
+    let site = get(srv.port, "/rss.xml");
+    assert_eq!(site.status, 200);
+    let site_text = String::from_utf8_lossy(&site.body).into_owned();
+    assert_no_bare_ampersands(&site_text);
+    let two_pos = site_text
+        .find("/b/feed-two/index")
+        .expect("the site feed lacks feed-two");
+    let one_pos = site_text
+        .find("/b/feed-one/essays/one")
+        .expect("the site feed lacks feed-one");
+    assert!(two_pos < one_pos, "the site-wide feed is newest first: {site_text}");
+    assert!(!site_text.contains("secret"), "{site_text}");
+    assert!(!site_text.contains("Never fed."), "{site_text}");
+    let site_etag = header_value(&site.headers, "etag").expect("the site feed carries an ETag");
+    let site_cond = request(
+        srv.port,
+        "GET",
+        "/rss.xml",
+        &[("If-None-Match", site_etag)],
+        &[],
+    );
+    assert_eq!(site_cond.status, 304);
+}
+
+/// A server started with extra environment — the WebSub test
+/// needs a hub configured, and configuration is an env var read
+/// once at first use, so it must be present from the start.
+fn start_server_env(envs: &[(&str, &str)]) -> Server {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_markdown-wizard"));
+    cmd.args(["--dir", dir.path().to_str().unwrap(), "--port", "0", "--host", "127.0.0.1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    while stdout.read(&mut byte).unwrap_or(0) == 1 {
+        if byte[0] == b'\n' {
+            break;
+        }
+        line.push(byte[0]);
+    }
+    let text = String::from_utf8(line).unwrap();
+    let port: u16 = text
+        .split("127.0.0.1:")
+        .nth(1)
+        .and_then(|s| s.split_whitespace().next())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| panic!("no port in banner: {text}"));
+    Server { child, port, _dir: dir }
+}
+
+/// WebSub, end to end: with a hub configured, the feed carries
+/// the hub link, and a publish pings the hub for both changed
+/// feed addresses — the bundle's own and the site-wide feed.
+/// The stub hub records what it is sent; the publish itself is
+/// already home before the pings arrive, which is the point:
+/// a hub can never hold a publish hostage.
+#[test]
+fn websub_pings_the_hub_on_publish() {
+    use std::sync::{Arc as StdArc, Mutex as StdMutex};
+    // The stub hub: accept, record the body, answer 200.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let hub_port = listener.local_addr().unwrap().port();
+    let inbox: StdArc<StdMutex<Vec<String>>> = StdArc::new(StdMutex::new(Vec::new()));
+    let inbox_thread = inbox.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 4096];
+            // Read until the declared body has arrived.
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&buf[..n]);
+                        let text = String::from_utf8_lossy(&raw);
+                        if let Some(head_end) = text.find("\r\n\r\n") {
+                            let len: usize = text[..head_end]
+                                .lines()
+                                .find_map(|l| {
+                                    l.to_lowercase()
+                                        .strip_prefix("content-length:")
+                                        .and_then(|v| v.trim().parse().ok())
+                                })
+                                .unwrap_or(0);
+                            if text.len() >= head_end + 4 + len {
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let text = String::from_utf8_lossy(&raw).into_owned();
+            let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+            inbox_thread.lock().unwrap().push(body);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = stream.flush();
+        }
+    });
+    let hub_url = format!("http://127.0.0.1:{hub_port}/hub");
+    let srv = start_server_env(&[("MDWIZ_WEBSUB_HUB", &hub_url)]);
+
+    let zip = make_zip(&[("index.md", "# Hubbed\n\nAnnounced in real time.\n")]);
+    let r = publish(srv.port, "hub-bundle", &zip, None, None);
+    assert_eq!(r.status, 201, "publish: {}", String::from_utf8_lossy(&r.body));
+
+    // The feed names the hub (and itself).
+    let feed = get(srv.port, "/b/hub-bundle/feed.xml");
+    let feed_text = String::from_utf8_lossy(&feed.body).into_owned();
+    assert!(
+        feed_text.contains(&format!("<atom:link href=\"{hub_url}\" rel=\"hub\"/>")),
+        "{feed_text}"
+    );
+
+    // Both pings arrive: the bundle feed and the site-wide feed.
+    let decode = |s: &str| s.replace("%3A", ":").replace("%2F", "/");
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        let got: Vec<String> = inbox.lock().unwrap().clone();
+        let decoded: Vec<String> = got.iter().map(|b| decode(b)).collect();
+        let bundle_ping = decoded
+            .iter()
+            .any(|b| b.contains("hub.mode=publish") && b.contains("hub.url=https://md.phext.io/b/hub-bundle/feed.xml"));
+        let site_ping = decoded
+            .iter()
+            .any(|b| b.contains("hub.mode=publish") && b.contains("hub.url=https://md.phext.io/rss.xml"));
+        if bundle_ping && site_ping {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the hub saw: {decoded:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }

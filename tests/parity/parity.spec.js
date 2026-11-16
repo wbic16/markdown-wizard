@@ -295,7 +295,8 @@ test('W9–W12 publish → stable raw .md URL, reading view, RSS feed', async ({
   const feed = await request.get(`/b/${s}/feed.xml`);
   expect(feed.status()).toBe(200);
   const xml = await feed.text();
-  expect(xml).toContain('<rss version="2.0">');
+  expect(xml).toContain('<rss version="2.0"');
+  expect(xml).toContain('<source:markdown>');
   expect(xml).toContain(`/b/${s}/parity-page`);
   expect(xml).toContain(`/b/${s}/about`);
   expect(xml).not.toContain('scratch');
